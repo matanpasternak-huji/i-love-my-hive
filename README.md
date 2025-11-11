@@ -1,2 +1,2 @@
 # i-love-my-hive
-Bee dominance behaivor recognition
+Bee dominance behavior recognition
