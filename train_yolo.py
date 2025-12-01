@@ -14,6 +14,7 @@ from ultralytics import YOLO
 # Dataset configuration
 DATA_YAML = "yolo_dataset/data.yaml"
 
+
 # Model selection - choose one:
 # - yolov8n.pt: Nano (fastest, least accurate) - good for testing
 # - yolov8s.pt: Small (fast, decent accuracy)
