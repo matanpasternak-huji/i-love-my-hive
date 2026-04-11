@@ -213,7 +213,7 @@ def check_antennation(kpA, kpB):
         return None
     cx = (aR[0] + aL[0] + bR[0] + bL[0]) / 4
     cy = (aR[1] + aL[1] + bR[1] + bL[1]) / 4
-    return (cx, cy)
+    return cx, cy
 
 
 # ── Interaction tracker ────────────────────────────────────────────────────────
