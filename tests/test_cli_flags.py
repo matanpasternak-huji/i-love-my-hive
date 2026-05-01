@@ -12,9 +12,16 @@ def test_find_interactions_help_exposes_parameter_flags():
     assert "--no-show-live"      in result.stdout
     assert "--no-save-video"     in result.stdout
 
-def test_apply_cli_overrides_sets_globals():
+def test_apply_cli_overrides_sets_globals(monkeypatch):
     import argparse
     import find_interactions_by_antennation as m
+
+    monkeypatch.setattr(m, 'TOUCH_THRESH', m.TOUCH_THRESH)
+    monkeypatch.setattr(m, 'MIN_TOUCH_FRAMES', m.MIN_TOUCH_FRAMES)
+    monkeypatch.setattr(m, 'D_EXIT_FACTOR', m.D_EXIT_FACTOR)
+    monkeypatch.setattr(m, 'MAX_INTERACTION_FRAMES', m.MAX_INTERACTION_FRAMES)
+    monkeypatch.setattr(m, 'SHOW_LIVE', m.SHOW_LIVE)
+    monkeypatch.setattr(m, 'SAVE_VIDEO', m.SAVE_VIDEO)
 
     args = argparse.Namespace(
         touch_thresh=30,
@@ -25,9 +32,9 @@ def test_apply_cli_overrides_sets_globals():
         no_save_video=True,
     )
     m.apply_cli_overrides(args)
-    assert m.TOUCH_THRESH          == 30
-    assert m.MIN_TOUCH_FRAMES      == 5
-    assert m.D_EXIT_FACTOR         == 2.0
+    assert m.TOUCH_THRESH           == 30
+    assert m.MIN_TOUCH_FRAMES       == 5
+    assert m.D_EXIT_FACTOR          == 2.0
     assert m.MAX_INTERACTION_FRAMES == 500
-    assert m.SHOW_LIVE             == False
-    assert m.SAVE_VIDEO            == False
+    assert m.SHOW_LIVE              == False
+    assert m.SAVE_VIDEO             == False

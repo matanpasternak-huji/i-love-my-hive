@@ -767,7 +767,7 @@ def save_results(summary, json_path, csv_path_out):
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
-def apply_cli_overrides(args):
+def apply_cli_overrides(args) -> None:
     """Apply argparse namespace values to module-level config globals."""
     global TOUCH_THRESH, MIN_TOUCH_FRAMES, D_EXIT_FACTOR, MAX_INTERACTION_FRAMES
     global SHOW_LIVE, SAVE_VIDEO
@@ -779,9 +779,9 @@ def apply_cli_overrides(args):
         D_EXIT_FACTOR = args.d_exit_factor
     if args.max_frames is not None:
         MAX_INTERACTION_FRAMES = args.max_frames
-    if args.no_show_live:
+    if getattr(args, 'no_show_live', False):
         SHOW_LIVE = False
-    if args.no_save_video:
+    if getattr(args, 'no_save_video', False):
         SAVE_VIDEO = False
 
 
