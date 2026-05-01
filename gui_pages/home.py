@@ -25,10 +25,10 @@ class HomePage(QWidget):
         self._setup_bees()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(16)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
+        self.setStyleSheet("background: #0d1117;")
         layout.setAlignment(Qt.AlignCenter)
         layout.setSpacing(14)
 
@@ -85,6 +85,14 @@ class HomePage(QWidget):
             x = cx_f * w + ax * math.sin(freq * self._t + px)
             y = cy_f * h + ay * math.cos(freq * self._t + py)
             label.move(int(x - 18), int(y - 18))
+
+    def showEvent(self, event):
+        super(HomePage, self).showEvent(event)
+        self._timer.start(16)
+
+    def hideEvent(self, event):
+        super(HomePage, self).hideEvent(event)
+        self._timer.stop()
 
     def refresh_model_label(self):
         self._model_label.setText("Active model: {}".format(self._app_state.model_name))
