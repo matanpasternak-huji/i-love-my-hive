@@ -64,7 +64,10 @@ class DropZone(QFrame):
     def dropEvent(self, event):
         urls = event.mimeData().urls()
         if urls:
-            self._set_path(urls[0].toLocalFile())
+            local = urls[0].toLocalFile()
+            if local:
+                self._set_path(local)
+                event.acceptProposedAction()
 
     def path(self):
         # type: () -> Optional[str]
