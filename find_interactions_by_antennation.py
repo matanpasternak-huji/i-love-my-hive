@@ -767,6 +767,24 @@ def save_results(summary, json_path, csv_path_out):
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+def apply_cli_overrides(args):
+    """Apply argparse namespace values to module-level config globals."""
+    global TOUCH_THRESH, MIN_TOUCH_FRAMES, D_EXIT_FACTOR, MAX_INTERACTION_FRAMES
+    global SHOW_LIVE, SAVE_VIDEO
+    if args.touch_thresh is not None:
+        TOUCH_THRESH = args.touch_thresh
+    if args.min_touch_frames is not None:
+        MIN_TOUCH_FRAMES = args.min_touch_frames
+    if args.d_exit_factor is not None:
+        D_EXIT_FACTOR = args.d_exit_factor
+    if args.max_frames is not None:
+        MAX_INTERACTION_FRAMES = args.max_frames
+    if args.no_show_live:
+        SHOW_LIVE = False
+    if args.no_save_video:
+        SAVE_VIDEO = False
+
+
 if __name__ == "__main__":
     import argparse
     import sys
@@ -776,7 +794,20 @@ if __name__ == "__main__":
     parser.add_argument("--video",      default=VIDEO_PATH, help="Path to input video")
     parser.add_argument("--csv",        default=CSV_PATH,   help="Path to tracking CSV")
     parser.add_argument("--output-dir", default=OUTPUT_PATH,       help="Directory for all outputs")
+    parser.add_argument("--touch-thresh",     type=int,   default=None,
+                        help="Touch threshold in pixels (overrides TOUCH_THRESH)")
+    parser.add_argument("--min-touch-frames", type=int,   default=None,
+                        help="Min consecutive touch frames (overrides MIN_TOUCH_FRAMES)")
+    parser.add_argument("--d-exit-factor",    type=float, default=None,
+                        help="Exit distance factor x avg body length (overrides D_EXIT_FACTOR)")
+    parser.add_argument("--max-frames",       type=int,   default=None,
+                        help="Max interaction frames before cancel (overrides MAX_INTERACTION_FRAMES)")
+    parser.add_argument("--no-show-live",     action="store_true",
+                        help="Suppress the live OpenCV visualisation window")
+    parser.add_argument("--no-save-video",    action="store_true",
+                        help="Skip saving the annotated output video")
     args = parser.parse_args()
+    apply_cli_overrides(args)
 
     video_path = args.video
     csv_path   = args.csv
