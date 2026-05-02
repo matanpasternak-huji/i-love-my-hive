@@ -47,12 +47,10 @@ class MainWindow(QMainWindow):
         self._pipeline.run_requested.connect(self._start_run)
 
     def _start_run(self, params):
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = str(_OUTPUT_ROOT / ts)
         run_params = dict(params)
         run_params["summary"] = self._pipeline.params_summary()
         self._stack.setCurrentIndex(2)
-        self._running.start(run_params, output_dir)
+        self._running.start(run_params, str(_OUTPUT_ROOT))
 
     def _on_pipeline_done(self, output_dir, show_video):
         QMessageBox.information(
@@ -69,6 +67,14 @@ class MainWindow(QMainWindow):
         self._home.refresh_model_label()
         self._pipeline.refresh_model_badge()
         self._stack.setCurrentIndex(0)
+
+    def closeEvent(self, event):
+        from PyQt5.QtCore import QProcess
+        proc = self._running._process
+        if proc and proc.state() != QProcess.NotRunning:
+            proc.kill()
+            proc.waitForFinished(3000)
+        super(MainWindow, self).closeEvent(event)
 
 
 def main():

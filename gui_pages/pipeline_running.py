@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
 _STEP_RE = re.compile(r"Step\s+(\d+)/3\s+")
 _OK_RE   = re.compile(r"\[OK\]")
 _ERR_RE  = re.compile(r"\[ERROR\]")
+_RUN_FOLDER_RE = re.compile(r"Run folder\s*:\s*(.+)")
 
 
 class RunningPage(QWidget):
@@ -127,6 +128,10 @@ class RunningPage(QWidget):
 
     def _parse_progress(self, line):
         # type: (str) -> None
+        mf = _RUN_FOLDER_RE.search(line)
+        if mf:
+            self._output_dir = mf.group(1).strip()
+            return
         m = _STEP_RE.search(line)
         if m:
             step = int(m.group(1))
