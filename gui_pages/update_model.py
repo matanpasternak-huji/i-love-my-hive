@@ -91,20 +91,31 @@ class UpdateModelPage(QWidget):
             )
 
     def _do_replace(self):
+        if self._staged_path is None:
+            return
+
         old = Path(self._app_state.model_path)
         new = Path(self._staged_path)
         dest_parent = old.parent if old.exists() else new.parent
-
-        if old.exists() and old.is_dir():
-            shutil.rmtree(old)
-
         dest = dest_parent / new.name
-        # If new and dest are in the same location, don't copy
-        if new != dest:
-            shutil.copytree(new, dest)
-        else:
-            # new is already in the right location
-            pass
+
+        # Prevent silent data loss when old and new point to the same directory
+        if dest.resolve() == old.resolve() and old.exists():
+            QMessageBox.warning(
+                self, "Invalid operation",
+                "The new model folder has the same name as the current model.",
+            )
+            return
+
+        try:
+            if old.exists() and old.is_dir():
+                shutil.rmtree(old)
+            # Only copy if new is not already in the destination location
+            if new != dest:
+                shutil.copytree(str(new), str(dest))
+        except OSError as exc:
+            QMessageBox.critical(self, "Replace failed", str(exc))
+            return
 
         self._app_state.model_path = str(dest)
         self._app_state.model_name = new.name
