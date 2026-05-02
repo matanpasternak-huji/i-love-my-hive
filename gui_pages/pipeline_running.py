@@ -23,6 +23,7 @@ class RunningPage(QWidget):
         self._output_dir = ""
         self._show_video = False
         self._current_step = 0
+        self._canceled = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -66,6 +67,10 @@ class RunningPage(QWidget):
 
     def start(self, params, output_dir):
         # type: (dict, str) -> None
+        self._canceled = False
+        if self._process and self._process.state() != QProcess.NotRunning:
+            self._process.kill()
+            self._process.waitForFinished(2000)
         self._output_dir = output_dir
         self._show_video = params.get("show_video", False) and params.get("save_video", True)
         self._current_step = 0
@@ -132,11 +137,14 @@ class RunningPage(QWidget):
             self._bar.setValue(self._current_step * 100 // 3)
 
     def _cancel(self):
+        self._canceled = True
         if self._process and self._process.state() == QProcess.Running:
             self._process.terminate()
         self.canceled.emit()
 
     def _on_finished(self, exit_code, _exit_status):
+        if self._canceled:
+            return
         if exit_code == 0:
             self._bar.setValue(100)
             self.done.emit(self._output_dir, self._show_video)
