@@ -49,9 +49,10 @@ class MainWindow(QMainWindow):
     def _start_run(self, params):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = str(_OUTPUT_ROOT / ts)
-        params["summary"] = self._pipeline.params_summary()
+        run_params = dict(params)
+        run_params["summary"] = self._pipeline.params_summary()
         self._stack.setCurrentIndex(2)
-        self._running.start(params, output_dir)
+        self._running.start(run_params, output_dir)
 
     def _on_pipeline_done(self, output_dir, show_video):
         QMessageBox.information(
