@@ -14,6 +14,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+import cv2
+
+
+def video_frame_count(path: str) -> int:
+    """Return the total number of frames in a video."""
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        sys.exit(f"[ERROR] Could not open video to count frames: {path}")
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return n
+
 # ==================== CONFIGURATION ====================
 
 INPUT_VIDEO = "Videos/set3_age3_group12_10min.mp4"
@@ -37,9 +49,10 @@ NAPS_ARUCO_THRESH_WIN_SIZE_STEP      = 10
 NAPS_ARUCO_THRESH_WIN_SIZE_MIN       = 3
 NAPS_HALF_ROLLING_WINDOW_SIZE        = 20
 
-# NAPS frame range (set to 0 and total frame count of your video)
+# NAPS frame range. Leave NAPS_END_FRAME = None to auto-detect the video's
+# total frame count (recommended). Set an integer only to cap processing.
 NAPS_START_FRAME = 0
-NAPS_END_FRAME   = 18000   # update to match your video's frame count
+NAPS_END_FRAME   = None
 
 # =======================================================
 
@@ -113,6 +126,11 @@ def main(input_video: str = None, output_dir: str = None) -> str:
     )
 
     # ── Step 2: NAPS identity correction ──────────────────────────────────────
+    naps_end_frame = NAPS_END_FRAME
+    if naps_end_frame is None:
+        naps_end_frame = video_frame_count(video)
+        print(f"  NAPS end frame   : {naps_end_frame} (auto-detected)")
+
     run(
         "Step 2/3 — NAPS identity correction (ArUco barcode tracking)",
         [
@@ -121,7 +139,7 @@ def main(input_video: str = None, output_dir: str = None) -> str:
             "--video-path",                           video,
             "--output-path",                          corrected_slp,
             "--start-frame",                          str(NAPS_START_FRAME),
-            "--end-frame",                            str(NAPS_END_FRAME),
+            "--end-frame",                            str(naps_end_frame),
             "--tag-node-name",                        NAPS_TAG_NODE_NAME,
             "--aruco-marker-set",                     NAPS_ARUCO_MARKER_SET,
             "--aruco-crop-size",                      str(NAPS_ARUCO_CROP_SIZE),
