@@ -690,11 +690,8 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
         ly = height - 110
         cv2.rectangle(frame, (8, ly - 5), (310, height - 8), (0, 0, 0), -1)
         legend = [
-            ("● blue=abdomen  white=tag  yellow=head", (200, 200, 200)),
-            ("● cyan=antenna tips  green=antenna segs", (200, 200, 200)),
-            ("→ green axis: interacting  gray: idle", (200, 200, 200)),
-            ("● magenta: interaction center", C["center"]),
-            (f"○ red ring: D_EXIT (head)={d_exit:.0f}px", C["exit_ring"]),
+            ("interaction center", C["center"]),
+            (f"D_EXIT (head) = {d_exit:.0f}px", C["exit_ring"]),
         ]
         for k, (txt, col) in enumerate(legend):
             cv2.putText(frame, txt, (14, ly + 14 + k * 18),
