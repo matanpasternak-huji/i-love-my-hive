@@ -459,6 +459,11 @@ def _draw_arrow(frame, p1, p2, color, thickness=2, tip_length=0.3):
                     color, thickness, cv2.LINE_AA, tipLength=tip_length)
 
 
+def fmt_bee(bee_id):
+    """Format a bee id for display: 'ArUcoTag#5' -> 'Bee #5'."""
+    return bee_id.replace("ArUcoTag#", "Bee #")
+
+
 def _draw_seg(frame, p1, p2, color, thickness=1):
     if p1 is None or p2 is None:
         return
@@ -576,7 +581,9 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
             if old_states.get(pk, InteractionState.IDLE) != si["state"]:
                 if si["state"] == InteractionState.INTERACTING:
                     a, b = pk
-                    recent_events.append((frame_number, f"START: {a} <-> {b}", C["event_start"]))
+                    recent_events.append((frame_number,
+                                          f"START: {fmt_bee(a)} <-> {fmt_bee(b)}",
+                                          C["event_start"]))
 
         for ix in viz_tracker.completed_interactions:
             ik = (ix["bee1_id"], ix["bee2_id"], ix["exit_frame"])
@@ -585,10 +592,12 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
                 a, b, w = ix["bee1_id"], ix["bee2_id"], ix["winner"]
                 reason   = ix.get("reason", "")
                 if w == "canceled":
-                    recent_events.append((frame_number, f"CANCELED: {a} <-> {b}", C["event_cancel"]))
+                    recent_events.append((frame_number,
+                                          f"CANCELED: {fmt_bee(a)} <-> {fmt_bee(b)}",
+                                          C["event_cancel"]))
                 else:
                     recent_events.append((frame_number,
-                                          f"END: {a} <-> {b}  winner={w}",
+                                          f"END: {fmt_bee(a)} <-> {fmt_bee(b)}  winner={fmt_bee(w)}",
                                           C["event_end"]))
 
         recent_events = [e for e in recent_events if frame_number - e[0] < 90]
