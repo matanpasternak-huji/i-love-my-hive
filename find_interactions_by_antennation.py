@@ -696,12 +696,12 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
             y += 26
 
         # Legend
-        ly = height - 110
-        cv2.rectangle(frame, (8, ly - 5), (310, height - 8), (0, 0, 0), -1)
         legend = [
             ("interaction center", C["center"]),
             (f"D_EXIT (head) = {d_exit:.0f}px", C["exit_ring"]),
         ]
+        ly = height - 8 - (len(legend) * 18 + 4)
+        cv2.rectangle(frame, (8, ly - 5), (210, height - 8), (0, 0, 0), -1)
         for k, (txt, col) in enumerate(legend):
             cv2.putText(frame, txt, (14, ly + 14 + k * 18),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, col, 1, cv2.LINE_AA)
