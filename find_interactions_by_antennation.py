@@ -576,7 +576,7 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
             if old_states.get(pk, InteractionState.IDLE) != si["state"]:
                 if si["state"] == InteractionState.INTERACTING:
                     a, b = pk
-                    recent_events.append((frame_number, f"START: {a} ↔ {b}", C["event_start"]))
+                    recent_events.append((frame_number, f"START: {a} <-> {b}", C["event_start"]))
 
         for ix in viz_tracker.completed_interactions:
             ik = (ix["bee1_id"], ix["bee2_id"], ix["exit_frame"])
@@ -585,10 +585,10 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
                 a, b, w = ix["bee1_id"], ix["bee2_id"], ix["winner"]
                 reason   = ix.get("reason", "")
                 if w == "canceled":
-                    recent_events.append((frame_number, f"CANCELED: {a} ↔ {b}", C["event_cancel"]))
+                    recent_events.append((frame_number, f"CANCELED: {a} <-> {b}", C["event_cancel"]))
                 else:
                     recent_events.append((frame_number,
-                                          f"END: {a} ↔ {b}  winner={w}",
+                                          f"END: {a} <-> {b}  winner={w}",
                                           C["event_end"]))
 
         recent_events = [e for e in recent_events if frame_number - e[0] < 90]
