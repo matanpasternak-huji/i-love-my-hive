@@ -643,10 +643,6 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
             posB = bee_pos.get(idB)
 
             if si["state"] == InteractionState.INTERACTING:
-                # Line between bee bodies
-                if posA and posB:
-                    _draw_seg(frame, posA, posB, C["interacting"], 2)
-
                 center = si["center"]
                 if center:
                     cx, cy = int(center[0]), int(center[1])
