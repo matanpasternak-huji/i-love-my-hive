@@ -9,16 +9,18 @@ frames.
 The interaction center is the centroid of the 4 antenna tips and is updated
 every frame that antennation continues.
 
-Interaction END — two independent exit conditions:
-  1. Distance exit  : either bee's body moves > D_EXIT from the center.
-  2. Direction exit : either bee's body moves > D_EXIT_DIRECTION from the
-                      center AND its abdomen→head vector points away from the
-                      center (dot product < 0, i.e. angle > 90°).
+Interaction END:
+  Distance exit: either bee's HEAD moves > D_EXIT from the interaction center.
+
+Using the head (rather than the barcode/tag) as the exit point implicitly
+captures directional intent: a bee that hasn't turned around must travel the
+full D_EXIT distance to exit, while a bee facing away exits sooner because its
+head leads the movement.
 
 While either bee is absent from the CSV the exit checks are suspended; a
 decision is made only once both bees reappear.
 
-The bee that triggered the exit (moved away / turned away) is the loser.
+The bee whose head triggered the exit (moved furthest) is the loser.
 """
 
 
@@ -48,21 +50,15 @@ MIN_TOUCH_FRAMES = 1
 # Minimum keypoint confidence score to accept a detection.
 SCORE_THRESH = 0.3
 
-# ── Exit condition 1: distance ─────────────────────────────────────────────────
-# End when a bee's body moves beyond this distance from the interaction center.
-D_EXIT = 180
-
-# ── Exit condition 2: direction ────────────────────────────────────────────────
-# End when a bee is beyond this distance FROM the center AND is facing away.
-# Must be smaller than D_EXIT.
-D_EXIT_DIRECTION = 120
+# ── Exit condition: distance ───────────────────────────────────────────────────
+# End when a bee's HEAD moves beyond this distance from the interaction center.
+D_EXIT = 100
 
 # ── Cancellation ──────────────────────────────────────────────────────────────
 MAX_INTERACTION_FRAMES = 1500  # 3000 is 100s at 30 fps
 
-# Adaptive exit threshold factors (multiplied by mean head-to-abdomen body length)
-D_EXIT_DIRECTION_FACTOR = 1.1
-D_EXIT_FACTOR           = 1.8
+# Adaptive exit threshold factor (multiplied by mean head-to-abdomen body length)
+D_EXIT_FACTOR = 1
 
 # Output
 OUTPUT_JSON  = "interactions_antennation.json"
@@ -132,25 +128,6 @@ def body_pos(kp):
     return None
 
 
-def body_direction(kp):
-    """
-    Return the unit vector from abdomen toward head (the bee's forward axis).
-    Returns None if either keypoint is missing/low-confidence.
-    """
-    if kp is None:
-        return None
-    abd = _valid_pt(kp["abdomen"])
-    head = _valid_pt(kp["head"])
-    if abd is None or head is None:
-        return None
-    dx = head[0] - abd[0]
-    dy = head[1] - abd[1]
-    mag = np.hypot(dx, dy)
-    if mag < 1e-6:
-        return None
-    return (dx / mag, dy / mag)
-
-
 def antenna_tips(kp):
     """Return ((Rx,Ry), (Lx,Ly)) if both tips are valid, else None."""
     if kp is None:
@@ -168,25 +145,11 @@ def pdist(p1, p2) -> float:
     return float(np.hypot(p1[0] - p2[0], p1[1] - p2[1]))
 
 
-def is_facing_away(kp, center, pos) -> bool:
-    """
-    True when the bee's body axis (abdomen→head) points away from the
-    interaction center: the dot product of the direction vector with the
-    (pos → center) unit vector is negative (angle > 90°).
-    """
-    if center is None or pos is None:
-        return False
-    bdir = body_direction(kp)
-    if bdir is None:
-        return False
-    to_cx = center[0] - pos[0]
-    to_cy = center[1] - pos[1]
-    mag = np.hypot(to_cx, to_cy)
-    if mag < 1e-6:
-        return False
-    to_c = (to_cx / mag, to_cy / mag)
-    dot = bdir[0] * to_c[0] + bdir[1] * to_c[1]
-    return dot < 0   # angle > 90°  → facing away
+def head_pos(kp):
+    """Return head position if valid, else None."""
+    if kp is None:
+        return None
+    return _valid_pt(kp["head"])
 
 
 def check_antennation(kpA, kpB):
@@ -213,17 +176,16 @@ def check_antennation(kpA, kpB):
         return None
     cx = (aR[0] + aL[0] + bR[0] + bL[0]) / 4
     cy = (aR[1] + aL[1] + bR[1] + bL[1]) / 4
-    return (cx, cy)
+    return cx, cy
 
 
 # ── Interaction tracker ────────────────────────────────────────────────────────
 
 class InteractionTracker:
-    def __init__(self, touch_thresh, d_exit, d_exit_direction, max_frames,
+    def __init__(self, touch_thresh, d_exit, max_frames,
                  min_touch_frames, tracked_pairs=None):
         self.touch_thresh      = touch_thresh
         self.d_exit            = d_exit
-        self.d_exit_direction  = d_exit_direction
         self.max_frames        = max_frames
         self.min_touch_frames  = min_touch_frames
 
@@ -313,19 +275,21 @@ class InteractionTracker:
             if center_candidate is not None:
                 st["center"] = center_candidate
 
-            # ── Feature 1: suspend exit checks while either bee is absent ─────
-            if posA is None or posB is None:
-                # No decision until both are visible again
+            # ── Feature 1: suspend exit checks while either head is absent ──────
+            headA = head_pos(kpA)
+            headB = head_pos(kpB)
+            if headA is None or headB is None:
+                # No decision until both heads are visible again
                 if st["frame_count"] > self.max_frames:
                     self._record_canceled(st, idA, idB, frame_number, float("inf"), float("inf"))
                     self._reset(st)
                 return
 
             center = st["center"]
-            dA = pdist(posA, center)
-            dB = pdist(posB, center)
+            dA = pdist(headA, center)
+            dB = pdist(headB, center)
 
-            # ── Exit condition 1: distance ────────────────────────────────────
+            # ── Exit condition: head distance ─────────────────────────────────
             loser, reason = None, None
             if dA > self.d_exit and dB > self.d_exit:
                 loser  = idA if dA >= dB else idB
@@ -334,18 +298,6 @@ class InteractionTracker:
                 loser, reason = idA, "distance_exit"
             elif dB > self.d_exit:
                 loser, reason = idB, "distance_exit"
-
-            # ── Exit condition 2: direction (only if not already exiting) ─────
-            if loser is None:
-                away_A = dA > self.d_exit_direction and is_facing_away(kpA, center, posA)
-                away_B = dB > self.d_exit_direction and is_facing_away(kpB, center, posB)
-                if away_A and away_B:
-                    loser  = idA if dA >= dB else idB   # pick the further one
-                    reason = "direction_exit"
-                elif away_A:
-                    loser, reason = idA, "direction_exit"
-                elif away_B:
-                    loser, reason = idB, "direction_exit"
 
             if loser is not None:
                 self._end(st, idA, idB, frame_number, loser, reason, dA, dB)
@@ -411,16 +363,15 @@ class InteractionTracker:
 
 # ── Adaptive threshold computation ────────────────────────────────────────────
 
-def compute_exit_thresholds(frame_groups):
+def compute_exit_threshold(frame_groups):
     """
-    Estimate D_EXIT and D_EXIT_DIRECTION from the first 500 annotated frames.
+    Estimate D_EXIT from the first 500 annotated frames.
 
     Measures the head-to-abdomen distance for every bee in every frame,
-    takes the mean, then applies the configured scaling factors:
-      D_EXIT_DIRECTION = mean_body_length × D_EXIT_DIRECTION_FACTOR
-      D_EXIT           = mean_body_length × D_EXIT_FACTOR
+    takes the mean, then applies the configured scaling factor:
+      D_EXIT = mean_body_length × D_EXIT_FACTOR
 
-    Falls back to the hardcoded config values if measurement fails.
+    Falls back to the hardcoded config value if measurement fails.
     """
     distances = []
     for frame_idx in sorted(frame_groups.keys())[:500]:
@@ -436,16 +387,14 @@ def compute_exit_thresholds(frame_groups):
                 distances.append(d)
 
     if not distances:
-        print("[WARN] Could not measure bee size — using hardcoded thresholds.")
-        return D_EXIT_DIRECTION, D_EXIT
+        print("[WARN] Could not measure bee size — using hardcoded threshold.")
+        return D_EXIT
 
     avg = float(np.mean(distances))
-    d_exit_dir = avg * D_EXIT_DIRECTION_FACTOR
-    d_exit     = avg * D_EXIT_FACTOR
+    d_exit = avg * D_EXIT_FACTOR
     print(f"  Avg bee body length : {avg:.1f} px  (n={len(distances)}, frames=first 500)")
-    print(f"  D_EXIT_DIRECTION    = {avg:.1f} × {D_EXIT_DIRECTION_FACTOR} = {d_exit_dir:.1f} px")
     print(f"  D_EXIT              = {avg:.1f} × {D_EXIT_FACTOR} = {d_exit:.1f} px")
-    return d_exit_dir, d_exit
+    return d_exit
 
 
 # ── Processing pass ────────────────────────────────────────────────────────────
@@ -460,15 +409,14 @@ def process_video(video_path, csv_path):
     print(f"  TOUCH_THRESH       : {TOUCH_THRESH} px")
     print(f"  MIN_TOUCH_FRAMES   : {MIN_TOUCH_FRAMES}")
     print(f"  D_EXIT             : (adaptive — computed from video)")
-    print(f"  D_EXIT_DIRECTION   : (adaptive — computed from video)")
     print(f"  MAX_INTERACTION_F  : {MAX_INTERACTION_FRAMES}")
     print(f"  TRACKED_PAIRS      : {TRACKED_PAIRS or 'ALL'}")
 
     frame_groups, all_ids = load_csv(csv_path)
     print(f"\nLoaded CSV: {len(all_ids)} tracks, {len(frame_groups)} annotated frames")
 
-    print("\nComputing adaptive exit thresholds from first 500 frames...")
-    d_exit_direction, d_exit = compute_exit_thresholds(frame_groups)
+    print("\nComputing adaptive exit threshold from first 500 frames...")
+    d_exit = compute_exit_threshold(frame_groups)
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -478,7 +426,7 @@ def process_video(video_path, csv_path):
     print(f"Video: {total_frames} frames")
 
     tracker = InteractionTracker(
-        TOUCH_THRESH, d_exit, d_exit_direction, MAX_INTERACTION_FRAMES,
+        TOUCH_THRESH, d_exit, MAX_INTERACTION_FRAMES,
         MIN_TOUCH_FRAMES, TRACKED_PAIRS or None,
     )
 
@@ -509,6 +457,11 @@ def _draw_arrow(frame, p1, p2, color, thickness=2, tip_length=0.3):
                     (int(p1[0]), int(p1[1])),
                     (int(p2[0]), int(p2[1])),
                     color, thickness, cv2.LINE_AA, tipLength=tip_length)
+
+
+def fmt_bee(bee_id):
+    """Format a bee id for display: 'ArUcoTag#5' -> 'Bee #5'."""
+    return bee_id.replace("ArUcoTag#", "Bee #")
 
 
 def _draw_seg(frame, p1, p2, color, thickness=1):
@@ -589,10 +542,10 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
         out    = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
         print(f"Output: {out_path}")
 
-    d_exit_direction, d_exit = compute_exit_thresholds(frame_groups)
+    d_exit = compute_exit_threshold(frame_groups)
 
     viz_tracker = InteractionTracker(
-        TOUCH_THRESH, d_exit, d_exit_direction, MAX_INTERACTION_FRAMES,
+        TOUCH_THRESH, d_exit, MAX_INTERACTION_FRAMES,
         MIN_TOUCH_FRAMES, TRACKED_PAIRS or None,
     )
 
@@ -601,9 +554,7 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
         "touch":         (0,   230, 255),
         "center":        (255,   0, 255),
         "exit_ring":     (0,    80, 255),   # D_EXIT ring
-        "dir_ring":      (0,   180, 255),   # D_EXIT_DIRECTION ring
-        "facing_ok":     (0,   255, 100),   # body axis: facing toward center
-        "facing_away":   (0,    60, 255),   # body axis: facing away (red-orange)
+        "interacting_axis": (0, 255, 100),  # body axis during interaction
         "neutral_axis":  (180, 180, 180),   # not in interaction
         "event_start":   (0,   255,   0),
         "event_end":     (255, 255,   0),
@@ -630,7 +581,9 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
             if old_states.get(pk, InteractionState.IDLE) != si["state"]:
                 if si["state"] == InteractionState.INTERACTING:
                     a, b = pk
-                    recent_events.append((frame_number, f"START: {a} ↔ {b}", C["event_start"]))
+                    recent_events.append((frame_number,
+                                          f"START: {fmt_bee(a)} <-> {fmt_bee(b)}",
+                                          C["event_start"]))
 
         for ix in viz_tracker.completed_interactions:
             ik = (ix["bee1_id"], ix["bee2_id"], ix["exit_frame"])
@@ -639,11 +592,12 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
                 a, b, w = ix["bee1_id"], ix["bee2_id"], ix["winner"]
                 reason   = ix.get("reason", "")
                 if w == "canceled":
-                    recent_events.append((frame_number, f"CANCELED: {a} ↔ {b}", C["event_cancel"]))
-                else:
-                    tag_reason = " [direction]" if reason == "direction_exit" else ""
                     recent_events.append((frame_number,
-                                          f"END{tag_reason}: {a} ↔ {b}  winner={w}",
+                                          f"CANCELED: {fmt_bee(a)} <-> {fmt_bee(b)}",
+                                          C["event_cancel"]))
+                else:
+                    recent_events.append((frame_number,
+                                          f"END: {fmt_bee(a)} <-> {fmt_bee(b)}  winner={fmt_bee(w)}",
                                           C["event_end"]))
 
         recent_events = [e for e in recent_events if frame_number - e[0] < 90]
@@ -667,16 +621,8 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
             if si["state"] != InteractionState.INTERACTING:
                 continue
             idA, idB = pk
-            center = si["center"]
             for bee_id in (idA, idB):
-                kp  = bee_kp.get(bee_id)
-                pos = bee_pos.get(bee_id)
-                if kp and pos and center:
-                    dist_to_center = pdist(pos, center)
-                    if dist_to_center > d_exit_direction and is_facing_away(kp, center, pos):
-                        axis_colors[bee_id] = C["facing_away"]
-                    else:
-                        axis_colors[bee_id] = C["facing_ok"]
+                axis_colors[bee_id] = C["interacting_axis"]
 
         # ── Draw skeletons ────────────────────────────────────────────────────
         for bee_id in all_ids:
@@ -697,10 +643,6 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
             posB = bee_pos.get(idB)
 
             if si["state"] == InteractionState.INTERACTING:
-                # Line between bee bodies
-                if posA and posB:
-                    _draw_seg(frame, posA, posB, C["interacting"], 2)
-
                 center = si["center"]
                 if center:
                     cx, cy = int(center[0]), int(center[1])
@@ -709,14 +651,13 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
                     cv2.circle(frame, (cx, cy), 8, C["center"], -1, cv2.LINE_AA)
                     cv2.circle(frame, (cx, cy), 9, (0, 0, 0), 1, cv2.LINE_AA)
 
-                    # D_EXIT ring (distance exit boundary)
+                    # D_EXIT ring (head-distance exit boundary)
                     cv2.circle(frame, (cx, cy), int(d_exit), C["exit_ring"], 1, cv2.LINE_AA)
 
-                    # D_EXIT_DIRECTION ring (direction exit boundary — smaller, dashed look)
-                    cv2.circle(frame, (cx, cy), int(d_exit_direction), C["dir_ring"], 1, cv2.LINE_AA)
-
                     # Frame counter
-                    suspended = (bee_pos.get(idA) is None or bee_pos.get(idB) is None)
+                    headA_viz = head_pos(bee_kp.get(idA))
+                    headB_viz = head_pos(bee_kp.get(idB))
+                    suspended = (headA_viz is None or headB_viz is None)
                     count_txt = f"{si['frame_count']}f" + (" [wait]" if suspended else "")
                     cv2.putText(frame, count_txt, (cx + 10, cy),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 3, cv2.LINE_AA)
@@ -751,16 +692,12 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
             y += 26
 
         # Legend
-        ly = height - 130
-        cv2.rectangle(frame, (8, ly - 5), (310, height - 8), (0, 0, 0), -1)
         legend = [
-            ("● blue=abdomen  white=tag  yellow=head", (200, 200, 200)),
-            ("● cyan=antenna tips  green=antenna segs", (200, 200, 200)),
-            ("→ green axis: facing center  | red axis: facing away", (200, 200, 200)),
-            ("● magenta: interaction center", C["center"]),
-            (f"○ orange ring: D_EXIT_DIR={d_exit_direction:.0f}px", C["dir_ring"]),
-            (f"○ red ring: D_EXIT={d_exit:.0f}px", C["exit_ring"]),
+            ("interaction center", C["center"]),
+            (f"D_EXIT (head) = {d_exit:.0f}px", C["exit_ring"]),
         ]
+        ly = height - 8 - (len(legend) * 18 + 4)
+        cv2.rectangle(frame, (8, ly - 5), (210, height - 8), (0, 0, 0), -1)
         for k, (txt, col) in enumerate(legend):
             cv2.putText(frame, txt, (14, ly + 14 + k * 18),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, col, 1, cv2.LINE_AA)
@@ -832,6 +769,24 @@ def save_results(summary, json_path, csv_path_out):
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+def apply_cli_overrides(args) -> None:
+    """Apply argparse namespace values to module-level config globals."""
+    global TOUCH_THRESH, MIN_TOUCH_FRAMES, D_EXIT_FACTOR, MAX_INTERACTION_FRAMES
+    global SHOW_LIVE, SAVE_VIDEO
+    if args.touch_thresh is not None:
+        TOUCH_THRESH = args.touch_thresh
+    if args.min_touch_frames is not None:
+        MIN_TOUCH_FRAMES = args.min_touch_frames
+    if args.d_exit_factor is not None:
+        D_EXIT_FACTOR = args.d_exit_factor
+    if args.max_frames is not None:
+        MAX_INTERACTION_FRAMES = args.max_frames
+    if getattr(args, 'no_show_live', False):
+        SHOW_LIVE = False
+    if getattr(args, 'no_save_video', False):
+        SAVE_VIDEO = False
+
+
 if __name__ == "__main__":
     import argparse
     import sys
@@ -841,7 +796,20 @@ if __name__ == "__main__":
     parser.add_argument("--video",      default=VIDEO_PATH, help="Path to input video")
     parser.add_argument("--csv",        default=CSV_PATH,   help="Path to tracking CSV")
     parser.add_argument("--output-dir", default=OUTPUT_PATH,       help="Directory for all outputs")
+    parser.add_argument("--touch-thresh",     type=int,   default=None,
+                        help="Touch threshold in pixels (overrides TOUCH_THRESH)")
+    parser.add_argument("--min-touch-frames", type=int,   default=None,
+                        help="Min consecutive touch frames (overrides MIN_TOUCH_FRAMES)")
+    parser.add_argument("--d-exit-factor",    type=float, default=None,
+                        help="Exit distance factor x avg body length (overrides D_EXIT_FACTOR)")
+    parser.add_argument("--max-frames",       type=int,   default=None,
+                        help="Max interaction frames before cancel (overrides MAX_INTERACTION_FRAMES)")
+    parser.add_argument("--no-show-live",     action="store_true",
+                        help="Suppress the live OpenCV visualisation window")
+    parser.add_argument("--no-save-video",    action="store_true",
+                        help="Skip saving the annotated output video")
     args = parser.parse_args()
+    apply_cli_overrides(args)
 
     video_path = args.video
     csv_path   = args.csv
