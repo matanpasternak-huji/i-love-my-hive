@@ -28,7 +28,7 @@ import csv
 import json
 from collections import defaultdict
 from enum import Enum
-
+import math
 import cv2
 import numpy as np
 import pandas as pd
@@ -59,6 +59,16 @@ MAX_INTERACTION_FRAMES = 1500  # 3000 is 100s at 30 fps
 
 # Adaptive exit threshold factor (multiplied by mean head-to-abdomen body length)
 D_EXIT_FACTOR = 1
+
+# ── Stability Mechanism (SLEAP Jump Filtering) ──────────────────────────────
+# Max allowed distance between consecutive frames before triggering the mechanism
+JUMP_THRESH = 50
+# Number of frames to look back for the stability check
+STABILITY_WINDOW = 10
+# Minimum fraction of frames in the window that must be close to the average
+STABLE_FRACTION = 0.8
+# Max distance from the window's average head position to be counted as 'stable'
+STABLE_DIST = 20
 
 # Output
 OUTPUT_JSON  = "interactions_antennation.json"
@@ -134,8 +144,12 @@ def antenna_tips(kp):
         return None
     r = _valid_pt(kp["ant_R_end"])
     l = _valid_pt(kp["ant_L_end"])
-    if r is None or l is None:
+    if r is None and l is None:
         return None
+    if r is None:
+        r=(0,0)
+    if l is None:
+        l=(0,0)
     return r, l
 
 
@@ -152,6 +166,30 @@ def head_pos(kp):
     return _valid_pt(kp["head"])
 
 
+def rotate_point(pt, center, angle_deg):
+    """
+    Rotates a point around a center pivot by a given angle in degrees.
+    Assumes standard image coordinates (Y-axis points downwards).
+    """
+    angle_rad = math.radians(angle_deg)
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+
+    px, py = pt
+    cx, cy = center
+
+    # Translate point to origin (relative to center)
+    vx, vy = px - cx, py - cy
+
+    # Rotate and translate back.
+    # Note: Because Y grows downwards in images, a positive angle
+    # mathematically results in a visually CLOCKWISE rotation.
+    nx = cx + (vx * cos_a - vy * sin_a)
+    ny = cy + (vx * sin_a + vy * cos_a)
+
+    return float(nx), float(ny)
+
+
 def check_antennation(kpA, kpB):
     """
     Returns the centroid of the 4 antenna tips if full bilateral antennation
@@ -166,6 +204,31 @@ def check_antennation(kpA, kpB):
         return None
     aR, aL = tA
     bR, bL = tB
+
+    # Extract heads to use as the center of the rotation circles
+    headA = head_pos(kpA)
+    headB = head_pos(kpB)
+
+    # If we need to estimate an antenna but the head is also missing, we must abort
+    if (aR == (0, 0) or aL == (0, 0)) and headA is None:
+        return None
+    if (bR == (0, 0) or bL == (0, 0)) and headB is None:
+        return None
+
+    # --- Estimate missing antennas for Bee A ---
+    if aR == (0, 0) and aL != (0, 0):
+        # Left is visible, estimate Right: 110 degrees Clockwise
+        aR = rotate_point(aL, headA, 110)
+    elif aL == (0, 0) and aR != (0, 0):
+        # Right is visible, estimate Left: 110 degrees Counter-Clockwise
+        aL = rotate_point(aR, headA, -110)
+
+    # --- Estimate missing antennas for Bee B ---
+    if bR == (0, 0) and bL != (0, 0):
+        bR = rotate_point(bL, headB, 110)
+    elif bL == (0, 0) and bR != (0, 0):
+        bL = rotate_point(bR, headB, -110)
+
     if min(pdist(aR, bR), pdist(aR, bL)) > TOUCH_THRESH:
         return None
     if min(pdist(aL, bR), pdist(aL, bL)) > TOUCH_THRESH:
@@ -188,6 +251,15 @@ class InteractionTracker:
         self.d_exit            = d_exit
         self.max_frames        = max_frames
         self.min_touch_frames  = min_touch_frames
+
+        # Stability Mechanism Parameters
+        self.jump_thresh = JUMP_THRESH
+        self.stability_window = STABILITY_WINDOW
+        self.stable_fraction = STABLE_FRACTION
+        self.stable_dist = STABLE_DIST
+
+        # Buffer to keep the last N head positions per bee: bee_id -> list of head_pos
+        self.head_history = defaultdict(list)
 
         if tracked_pairs:
             self.tracked_pairs = {tuple(sorted(p)) for p in tracked_pairs}
@@ -218,6 +290,14 @@ class InteractionTracker:
     def update(self, frame_groups, all_bee_ids, frame_number):
         for bee_id in all_bee_ids:
             kp = get_bee_keypoints(frame_groups, bee_id, frame_number)
+
+            # Update rolling head history for stability checks
+            h_pos = head_pos(kp) if kp is not None else None
+            self.head_history[bee_id].append(h_pos)
+            # Trim the buffer to window size
+            if len(self.head_history[bee_id]) > self.stability_window:
+                self.head_history[bee_id].pop(0)
+
             if kp is not None:
                 pos = body_pos(kp)
                 if pos is not None:
@@ -250,7 +330,57 @@ class InteractionTracker:
 
                 self._step(st, idA, idB, frame_number, kpA, kpB, posA, posB, center_candidate)
 
+    def _is_head_stable(self, bee_id):
+        """
+        Evaluates if the bee's head is stable. Activates the window-averaging
+        mechanism if a jump or missing frame is detected.
+        """
+        history = self.head_history[bee_id]
+        if not history:
+            return False
+
+        curr = history[-1]
+        prev = history[-2] if len(history) > 1 else curr
+
+        # Condition 1: Check for jump or missing data
+        jumped = (curr is None) or (prev is None) or (pdist(curr, prev) > self.jump_thresh)
+
+        if not jumped:
+            return True  # Normal, continuous movement
+
+        # Condition 2: Activate Mechanism (Lookback Window)
+
+        # Immediate rejection if the current frame is missing
+        if curr is None:
+            return False
+
+        valid_heads = [h for h in history if h is not None]
+        if not valid_heads:
+            return False  # No valid data points to form an average
+
+        # Calculate average of all valid frames in the window
+        avg_x = sum(h[0] for h in valid_heads) / len(valid_heads)
+        avg_y = sum(h[1] for h in valid_heads) / len(valid_heads)
+        avg_pt = (avg_x, avg_y)
+
+        # Immediate rejection if the current jump is far from the true average
+        if pdist(curr, avg_pt) > self.stable_dist:
+            return False
+
+        # Count how many frames in the history window are close to the average
+        stable_count = 0
+        for h in history:
+            if h is not None and pdist(h, avg_pt) <= self.stable_dist:
+                stable_count += 1
+
+        # Check if the required fraction of frames is met
+        return (stable_count / len(history)) >= self.stable_fraction
+
     def _step(self, st, idA, idB, frame_number, kpA, kpB, posA, posB, center_candidate):
+
+        # Evaluate Head Stability for both bees
+        heads_stable = self._is_head_stable(idA) and self._is_head_stable(idB)
+
         if st["state"] == InteractionState.IDLE:
             if center_candidate is not None:
                 st["touch_streak"]  += 1
@@ -278,8 +408,8 @@ class InteractionTracker:
             # ── Feature 1: suspend exit checks while either head is absent ──────
             headA = head_pos(kpA)
             headB = head_pos(kpB)
-            if headA is None or headB is None:
-                # No decision until both heads are visible again
+            if headA is None or headB is None or not heads_stable:
+                # No decision until both heads are visible and stable again
                 if st["frame_count"] > self.max_frames:
                     self._record_canceled(st, idA, idB, frame_number, float("inf"), float("inf"))
                     self._reset(st)
