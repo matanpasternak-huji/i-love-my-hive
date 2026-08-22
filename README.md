@@ -1,7 +1,9 @@
+![CSE Banner](media/cse_banner.jpg)    ![HUJI Banner](media/huji_banner.png)
+
 # 🐝 2 Bee or not 2 Bee
 ## AI-Powered Computer Vision for Automated Bee Behavior Detection
 
-![Project Cover Image](https://raw.githubusercontent.com/matanpasternak-huji/i-love-my-hive/main/media/project-cover-img.jpg)
+![Project Cover Image](media/project_cover_image.png)
 
 Current studies of bee behavior depend on manual observation, which is slow, subjective, and hard to scale. Detecting dominance behaviors requires constant expert attention. **2 Bee or not 2 Bee** is an automated computer vision system developed to detect and classify dominance interactions in controlled bee environments, enabling efficient, scalable behavioral monitoring for researchers.
 
