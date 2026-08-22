@@ -42,10 +42,13 @@ OUTPUT_PATH = "output/1"
 TRACKED_PAIRS = []
 
 # Antennation touch threshold (pixels).
-TOUCH_THRESH = 50
+TOUCH_THRESH = 40
 
 # Minimum consecutive antennation frames to start an interaction.
-MIN_TOUCH_FRAMES = 1
+MIN_TOUCH_FRAMES = 6
+
+# Minimum total frames an interaction must last to be recorded
+MIN_DURATION_FRAMES = 55
 
 # Minimum keypoint confidence score to accept a detection.
 SCORE_THRESH = 0.3
@@ -190,53 +193,79 @@ def rotate_point(pt, center, angle_deg):
     return float(nx), float(ny)
 
 
+def create_enriched_csv(input_csv, output_csv):
+    print("\nEnriching CSV with pseudo-antenna-tips...")
+    df = pd.read_csv(input_csv)
+
+    for idx, row in df.iterrows():
+        hx, hy = row.get("head.x"), row.get("head.y")
+
+        # Skip if no head is found to pivot around
+        if pd.isna(hx) or pd.isna(hy):
+            continue
+
+        rx, ry, rs = row.get("ant_R_end.x"), row.get("ant_R_end.y"), row.get(
+            "ant_R_end.score")
+        lx, ly, ls = row.get("ant_L_end.x"), row.get("ant_L_end.y"), row.get(
+            "ant_L_end.score")
+
+        r_valid = not (pd.isna(rx) or pd.isna(ry) or rs < SCORE_THRESH)
+        l_valid = not (pd.isna(lx) or pd.isna(ly) or ls < SCORE_THRESH)
+
+        # Estimate Right from Left
+        if not r_valid and l_valid:
+            nx, ny = rotate_point((lx, ly), (hx, hy), 110)
+            df.at[idx, "ant_R_end.x"] = nx
+            df.at[idx, "ant_R_end.y"] = ny
+            df.at[idx, "ant_R_end.score"] = 1.0  # Force valid score
+
+        # Estimate Left from Right
+        elif not l_valid and r_valid:
+            nx, ny = rotate_point((rx, ry), (hx, hy), -110)
+            df.at[idx, "ant_L_end.x"] = nx
+            df.at[idx, "ant_L_end.y"] = ny
+            df.at[idx, "ant_L_end.score"] = 1.0  # Force valid score
+
+    df.to_csv(output_csv, index=False)
+    print(f"Enriched CSV saved to: {output_csv}")
+    return output_csv
+
+
 def check_antennation(kpA, kpB):
     """
-    Returns the centroid of the 4 antenna tips if full bilateral antennation
-    is detected, else None.
-
-    Each of the 4 tips must be within TOUCH_THRESH of at least one tip from
-    the opposing bee.
+    Triggers if AT LEAST ONE bee has BOTH of its antennas within TOUCH_THRESH
+    of the other bee's antennas (2-on-1 or 2-on-2).
     """
     tA = antenna_tips(kpA)
     tB = antenna_tips(kpB)
     if tA is None or tB is None:
         return None
+
     aR, aL = tA
     bR, bL = tB
 
-    # Extract heads to use as the center of the rotation circles
-    headA = head_pos(kpA)
-    headB = head_pos(kpB)
-
-    # If we need to estimate an antenna but the head is also missing, we must abort
-    if (aR == (0, 0) or aL == (0, 0)) and headA is None:
-        return None
-    if (bR == (0, 0) or bL == (0, 0)) and headB is None:
+    # If an antenna is completely missing from the enriched CSV, abort
+    if aR == (0, 0) or aL == (0, 0) or bR == (0, 0) or bL == (0, 0):
         return None
 
-    # --- Estimate missing antennas for Bee A ---
-    if aR == (0, 0) and aL != (0, 0):
-        # Left is visible, estimate Right: 110 degrees Clockwise
-        aR = rotate_point(aL, headA, 110)
-    elif aL == (0, 0) and aR != (0, 0):
-        # Right is visible, estimate Left: 110 degrees Counter-Clockwise
-        aL = rotate_point(aR, headA, -110)
+    # Calculate all tip-to-tip distances
+    d_aR_bR = pdist(aR, bR)
+    d_aR_bL = pdist(aR, bL)
+    d_aL_bR = pdist(aL, bR)
+    d_aL_bL = pdist(aL, bL)
 
-    # --- Estimate missing antennas for Bee B ---
-    if bR == (0, 0) and bL != (0, 0):
-        bR = rotate_point(bL, headB, 110)
-    elif bL == (0, 0) and bR != (0, 0):
-        bL = rotate_point(bR, headB, -110)
+    # Condition 1: Bee A has BOTH antennas touching at least one of Bee B's
+    a_touches_b = min(d_aR_bR, d_aR_bL) <= TOUCH_THRESH and min(d_aL_bR,
+                                                                d_aL_bL) <= TOUCH_THRESH
 
-    if min(pdist(aR, bR), pdist(aR, bL)) > TOUCH_THRESH:
+    # Condition 2: Bee B has BOTH antennas touching at least one of Bee A's
+    b_touches_a = min(d_aR_bR, d_aL_bR) <= TOUCH_THRESH and min(d_aR_bL,
+                                                                d_aL_bL) <= TOUCH_THRESH
+
+    # Abort if neither bee achieved a 2-on-1 touch
+    if not (a_touches_b or b_touches_a):
         return None
-    if min(pdist(aL, bR), pdist(aL, bL)) > TOUCH_THRESH:
-        return None
-    if min(pdist(bR, aR), pdist(bR, aL)) > TOUCH_THRESH:
-        return None
-    if min(pdist(bL, aR), pdist(bL, aL)) > TOUCH_THRESH:
-        return None
+
     cx = (aR[0] + aL[0] + bR[0] + bL[0]) / 4
     cy = (aR[1] + aL[1] + bR[1] + bL[1]) / 4
     return cx, cy
@@ -246,17 +275,19 @@ def check_antennation(kpA, kpB):
 
 class InteractionTracker:
     def __init__(self, touch_thresh, d_exit, max_frames,
-                 min_touch_frames, tracked_pairs=None):
+                 min_touch_frames, min_duration_frames, tracked_pairs=None):
         self.touch_thresh      = touch_thresh
         self.d_exit            = d_exit
         self.max_frames        = max_frames
         self.min_touch_frames  = min_touch_frames
+        self.min_duration_frames = min_duration_frames
 
         # Stability Mechanism Parameters
         self.jump_thresh = JUMP_THRESH
         self.stability_window = STABILITY_WINDOW
         self.stable_fraction = STABLE_FRACTION
         self.stable_dist = STABLE_DIST
+        self.jumped_state = defaultdict(bool)  # Tracks the jumped state for each individual bee ID
 
         # Buffer to keep the last N head positions per bee: bee_id -> list of head_pos
         self.head_history = defaultdict(list)
@@ -330,7 +361,7 @@ class InteractionTracker:
 
                 self._step(st, idA, idB, frame_number, kpA, kpB, posA, posB, center_candidate)
 
-    def _is_head_stable(self, bee_id):
+    def _is_head_stable(self, bee_id, frame_number):
         """
         Evaluates if the bee's head is stable. Activates the window-averaging
         mechanism if a jump or missing frame is detected.
@@ -344,8 +375,10 @@ class InteractionTracker:
 
         # Condition 1: Check for jump or missing data
         jumped = (curr is None) or (prev is None) or (pdist(curr, prev) > self.jump_thresh)
+        if jumped:
+            self.jumped_state[bee_id] = True
 
-        if not jumped:
+        if not jumped and not self.jumped_state[bee_id]:
             return True  # Normal, continuous movement
 
         # Condition 2: Activate Mechanism (Lookback Window)
@@ -374,12 +407,18 @@ class InteractionTracker:
                 stable_count += 1
 
         # Check if the required fraction of frames is met
-        return (stable_count / len(history)) >= self.stable_fraction
+        if (stable_count / len(history)) >= self.stable_fraction:
+            self.jumped_state[bee_id] = False
+            # print(bee_id, frame_number, stable_count)
+            return True
+
+        return False
 
     def _step(self, st, idA, idB, frame_number, kpA, kpB, posA, posB, center_candidate):
 
         # Evaluate Head Stability for both bees
-        heads_stable = self._is_head_stable(idA) and self._is_head_stable(idB)
+        heads_stable = self._is_head_stable(idA, frame_number) and self._is_head_stable(
+            idB, frame_number)
 
         if st["state"] == InteractionState.IDLE:
             if center_candidate is not None:
@@ -410,9 +449,9 @@ class InteractionTracker:
             headB = head_pos(kpB)
             if headA is None or headB is None or not heads_stable:
                 # No decision until both heads are visible and stable again
-                if st["frame_count"] > self.max_frames:
-                    self._record_canceled(st, idA, idB, frame_number, float("inf"), float("inf"))
-                    self._reset(st)
+                # if st["frame_count"] > self.max_frames:
+                #     self._record_canceled(st, idA, idB, frame_number, float("inf"), float("inf"))
+                #     self._reset(st)
                 return
 
             center = st["center"]
@@ -435,11 +474,24 @@ class InteractionTracker:
                 return
 
             # ── Cancellation ──────────────────────────────────────────────────
-            if st["frame_count"] > self.max_frames:
-                self._record_canceled(st, idA, idB, frame_number, dA, dB)
-                self._reset(st)
+            # if st["frame_count"] > self.max_frames:
+            #     self._record_canceled(st, idA, idB, frame_number, dA, dB)
+            #     self._reset(st)
 
     def _end(self, st, idA, idB, frame_number, loser_id, reason, dA, dB):
+        # 1. Route to cancellation if it was too brief
+        if st["frame_count"] < self.min_duration_frames:
+            self._record_canceled(st, idA, idB, frame_number, dA, dB,
+                                  cancel_reason="too_short")
+            return
+
+        # 2. Route to cancellation if they were stuck together too long
+        if st["frame_count"] > self.max_frames:
+            self._record_canceled(st, idA, idB, frame_number, dA, dB,
+                                  cancel_reason="max_duration_exceeded")
+            return
+
+        # 3. Normal completion
         winner_id = idB if loser_id == idA else idA
         self.completed_interactions.append({
             "bee1_id":            idA,
@@ -454,7 +506,7 @@ class InteractionTracker:
             "reason":             reason,
         })
 
-    def _record_canceled(self, st, idA, idB, frame_number, dA, dB):
+    def _record_canceled(self, st, idA, idB, frame_number, dA, dB, cancel_reason):
         self.completed_interactions.append({
             "bee1_id":            idA,
             "bee2_id":            idB,
@@ -465,7 +517,7 @@ class InteractionTracker:
             "loser":              "canceled",
             "dist_from_center_A": float(dA),
             "dist_from_center_B": float(dB),
-            "reason":             "max_duration_exceeded",
+            "reason":             cancel_reason,
         })
 
     def _reset(self, st):
@@ -557,7 +609,7 @@ def process_video(video_path, csv_path):
 
     tracker = InteractionTracker(
         TOUCH_THRESH, d_exit, MAX_INTERACTION_FRAMES,
-        MIN_TOUCH_FRAMES, TRACKED_PAIRS or None,
+        MIN_TOUCH_FRAMES, MIN_DURATION_FRAMES, TRACKED_PAIRS or None,
     )
 
     print("\nProcessing frames...\n")
@@ -676,7 +728,7 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
 
     viz_tracker = InteractionTracker(
         TOUCH_THRESH, d_exit, MAX_INTERACTION_FRAMES,
-        MIN_TOUCH_FRAMES, TRACKED_PAIRS or None,
+        MIN_TOUCH_FRAMES, MIN_DURATION_FRAMES, TRACKED_PAIRS or None,
     )
 
     C = {
@@ -722,9 +774,13 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
                 a, b, w = ix["bee1_id"], ix["bee2_id"], ix["winner"]
                 reason   = ix.get("reason", "")
                 if w == "canceled":
-                    recent_events.append((frame_number,
-                                          f"CANCELED: {fmt_bee(a)} <-> {fmt_bee(b)}",
-                                          C["event_cancel"]))
+                    # Check reason to differentiate HUD message
+                    if reason == "too_short":
+                        msg = f"CANCELED (too short): {fmt_bee(a)} <-> {fmt_bee(b)}"
+                    else:
+                        msg = f"CANCELED (too long): {fmt_bee(a)} <-> {fmt_bee(b)}"
+
+                    recent_events.append((frame_number, msg, C["event_cancel"]))
                 else:
                     recent_events.append((frame_number,
                                           f"END: {fmt_bee(a)} <-> {fmt_bee(b)}  winner={fmt_bee(w)}",
@@ -960,11 +1016,15 @@ if __name__ == "__main__":
     if not Path(csv_path).exists():
         sys.exit(f"CSV not found: {csv_path}")
 
-    summary, tracker = process_video(video_path, csv_path)
+    # Define output path and enrich the CSV
+    enriched_csv_path = str(out / "enriched_tracking_data.csv") if args.output_dir else "enriched_tracking_data.csv"
+    create_enriched_csv(csv_path, enriched_csv_path)
+
+    summary, tracker = process_video(video_path, enriched_csv_path)
     save_results(summary, output_json, output_csv)
 
     print("\n" + "=" * 70)
     print("Generating Visualization")
     print("=" * 70)
-    visualize(video_path, csv_path, show=SHOW_LIVE, save=SAVE_VIDEO,
+    visualize(video_path, enriched_csv_path, show=SHOW_LIVE, save=SAVE_VIDEO,
               output_video_path=output_video)
