@@ -16,6 +16,7 @@ Current studies of bee behavior depend on manual observation, which is slow, sub
 - [Usage (Running the Pipeline)](#-usage-running-the-pipeline)
   - [GUI Application](#gui-application)
   - [Command Line Interface (CLI)](#command-line-interface-cli)
+  - [Interaction Detection Only (Skipping Pose Estimation)](#interaction-detection-only-skipping-pose-estimation)
 - [Built With](#-built-with)
 - [Acknowledgments](#-acknowledgments)
 
@@ -101,6 +102,32 @@ python main.py --input ".\videos\set3_age3_group12 - Trim 1530.mp4" --output ".\
 ```
 
 The pipeline will output a list of predicted interactions, separated by petri dish group. The output CSV includes the entrance and exit frames, the identities of the winner and loser, the distance of each bee from the interaction center, and the termination reason.
+
+### Interaction Detection Only (Skipping Pose Estimation)
+If you already have a body-part tracking CSV (stage 3 output, e.g. `tracking_data.csv` from a previous run), you can run **only** the deterministic interaction-detection algorithm and skip the expensive SLEAP inference and NAPS correction stages entirely. This is the fastest way to re-analyse the same video with different detection thresholds.
+
+**Command Structure:**
+```bash
+python find_interactions_by_antennation.py --video <path to video> --csv <path to tracking CSV> --output-dir <output folder path>
+```
+
+**Example:**
+```bash
+python .\find_interactions_by_antennation.py --video ".\videos\set3_age3_group12 - Trim 1530.mp4" --csv ".\output\20260816_003015\tracking_data_after_change.csv" --output-dir ".\output\20260822_160000"
+```
+
+The `--video` file must be the same video the CSV was generated from - it is used to render the annotated visualisation and to read frame dimensions.
+
+**Optional tuning flags:**
+
+| Flag | Description |
+| --- | --- |
+| `--touch-thresh` | Antennation distance threshold, in pixels. |
+| `--min-touch-frames` | Minimum consecutive touching frames required to open an interaction. |
+| `--d-exit-factor` | Multiplier for the dynamic exit threshold ($D_{EXIT}$). |
+| `--max-frames` | Stop after this many frames (useful for quick trials). |
+| `--no-show-live` | Do not open the live preview window while processing. |
+| `--no-save-video` | Skip writing the annotated output video. |
 
 ## ⚙️ Built With
 * [SLEAP](https://sleap.ai/) - Multi-animal pose tracking.
