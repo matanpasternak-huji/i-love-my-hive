@@ -28,7 +28,7 @@ import csv
 import json
 from collections import defaultdict
 from enum import Enum
-
+import math
 import cv2
 import numpy as np
 import pandas as pd
@@ -42,10 +42,13 @@ OUTPUT_PATH = "output/1"
 TRACKED_PAIRS = []
 
 # Antennation touch threshold (pixels).
-TOUCH_THRESH = 50
+TOUCH_THRESH = 40
 
 # Minimum consecutive antennation frames to start an interaction.
-MIN_TOUCH_FRAMES = 1
+MIN_TOUCH_FRAMES = 6
+
+# Minimum total frames an interaction must last to be recorded
+MIN_DURATION_FRAMES = 55
 
 # Minimum keypoint confidence score to accept a detection.
 SCORE_THRESH = 0.3
@@ -59,6 +62,22 @@ MAX_INTERACTION_FRAMES = 1500  # 3000 is 100s at 30 fps
 
 # Adaptive exit threshold factor (multiplied by mean head-to-abdomen body length)
 D_EXIT_FACTOR = 1
+
+# ── Stability Mechanism (SLEAP Jump Filtering) ──────────────────────────────
+# Max allowed distance between consecutive frames before triggering the mechanism
+JUMP_THRESH = 50
+# Number of frames to look back for the stability check
+STABILITY_WINDOW = 10
+# Minimum fraction of frames in the window that must be close to the average
+STABLE_FRACTION = 0.8
+# Max distance from the window's average head position to be counted as 'stable'
+STABLE_DIST = 20
+
+# ── Proximity / POI Filter ────────────────────────────────────────────────────
+# Factor for the large macro-boundary (distance between heads) to group interactions
+D_PROX_FACTOR = 2.1
+# If bees stay within the macro-boundary for longer than this, cancel enclosed interactions
+MAX_PROXIMITY_FRAMES = 1650
 
 # Output
 OUTPUT_JSON  = "interactions_antennation.json"
@@ -134,8 +153,12 @@ def antenna_tips(kp):
         return None
     r = _valid_pt(kp["ant_R_end"])
     l = _valid_pt(kp["ant_L_end"])
-    if r is None or l is None:
+    if r is None and l is None:
         return None
+    if r is None:
+        r=(0,0)
+    if l is None:
+        l=(0,0)
     return r, l
 
 
@@ -152,28 +175,103 @@ def head_pos(kp):
     return _valid_pt(kp["head"])
 
 
+def rotate_point(pt, center, angle_deg):
+    """
+    Rotates a point around a center pivot by a given angle in degrees.
+    Assumes standard image coordinates (Y-axis points downwards).
+    """
+    angle_rad = math.radians(angle_deg)
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+
+    px, py = pt
+    cx, cy = center
+
+    # Translate point to origin (relative to center)
+    vx, vy = px - cx, py - cy
+
+    # Rotate and translate back.
+    # Note: Because Y grows downwards in images, a positive angle
+    # mathematically results in a visually CLOCKWISE rotation.
+    nx = cx + (vx * cos_a - vy * sin_a)
+    ny = cy + (vx * sin_a + vy * cos_a)
+
+    return float(nx), float(ny)
+
+
+def create_enriched_csv(input_csv, output_csv):
+    print("\nEnriching CSV with pseudo-antenna-tips...")
+    df = pd.read_csv(input_csv)
+
+    for idx, row in df.iterrows():
+        hx, hy = row.get("head.x"), row.get("head.y")
+
+        # Skip if no head is found to pivot around
+        if pd.isna(hx) or pd.isna(hy):
+            continue
+
+        rx, ry, rs = row.get("ant_R_end.x"), row.get("ant_R_end.y"), row.get(
+            "ant_R_end.score")
+        lx, ly, ls = row.get("ant_L_end.x"), row.get("ant_L_end.y"), row.get(
+            "ant_L_end.score")
+
+        r_valid = not (pd.isna(rx) or pd.isna(ry) or rs < SCORE_THRESH)
+        l_valid = not (pd.isna(lx) or pd.isna(ly) or ls < SCORE_THRESH)
+
+        # Estimate Right from Left
+        if not r_valid and l_valid:
+            nx, ny = rotate_point((lx, ly), (hx, hy), 110)
+            df.at[idx, "ant_R_end.x"] = nx
+            df.at[idx, "ant_R_end.y"] = ny
+            df.at[idx, "ant_R_end.score"] = 1.0  # Force valid score
+
+        # Estimate Left from Right
+        elif not l_valid and r_valid:
+            nx, ny = rotate_point((rx, ry), (hx, hy), -110)
+            df.at[idx, "ant_L_end.x"] = nx
+            df.at[idx, "ant_L_end.y"] = ny
+            df.at[idx, "ant_L_end.score"] = 1.0  # Force valid score
+
+    df.to_csv(output_csv, index=False)
+    print(f"Enriched CSV saved to: {output_csv}")
+    return output_csv
+
+
 def check_antennation(kpA, kpB):
     """
-    Returns the centroid of the 4 antenna tips if full bilateral antennation
-    is detected, else None.
-
-    Each of the 4 tips must be within TOUCH_THRESH of at least one tip from
-    the opposing bee.
+    Triggers if AT LEAST ONE bee has BOTH of its antennas within TOUCH_THRESH
+    of the other bee's antennas (2-on-1 or 2-on-2).
     """
     tA = antenna_tips(kpA)
     tB = antenna_tips(kpB)
     if tA is None or tB is None:
         return None
+
     aR, aL = tA
     bR, bL = tB
-    if min(pdist(aR, bR), pdist(aR, bL)) > TOUCH_THRESH:
+
+    # If an antenna is completely missing from the enriched CSV, abort
+    if aR == (0, 0) or aL == (0, 0) or bR == (0, 0) or bL == (0, 0):
         return None
-    if min(pdist(aL, bR), pdist(aL, bL)) > TOUCH_THRESH:
+
+    # Calculate all tip-to-tip distances
+    d_aR_bR = pdist(aR, bR)
+    d_aR_bL = pdist(aR, bL)
+    d_aL_bR = pdist(aL, bR)
+    d_aL_bL = pdist(aL, bL)
+
+    # Condition 1: Bee A has BOTH antennas touching at least one of Bee B's
+    a_touches_b = min(d_aR_bR, d_aR_bL) <= TOUCH_THRESH and min(d_aL_bR,
+                                                                d_aL_bL) <= TOUCH_THRESH
+
+    # Condition 2: Bee B has BOTH antennas touching at least one of Bee A's
+    b_touches_a = min(d_aR_bR, d_aL_bR) <= TOUCH_THRESH and min(d_aR_bL,
+                                                                d_aL_bL) <= TOUCH_THRESH
+
+    # Abort if neither bee achieved a 2-on-1 touch
+    if not (a_touches_b or b_touches_a):
         return None
-    if min(pdist(bR, aR), pdist(bR, aL)) > TOUCH_THRESH:
-        return None
-    if min(pdist(bL, aR), pdist(bL, aL)) > TOUCH_THRESH:
-        return None
+
     cx = (aR[0] + aL[0] + bR[0] + bL[0]) / 4
     cy = (aR[1] + aL[1] + bR[1] + bL[1]) / 4
     return cx, cy
@@ -182,12 +280,24 @@ def check_antennation(kpA, kpB):
 # ── Interaction tracker ────────────────────────────────────────────────────────
 
 class InteractionTracker:
-    def __init__(self, touch_thresh, d_exit, max_frames,
-                 min_touch_frames, tracked_pairs=None):
+    def __init__(self, touch_thresh, d_exit, d_proximity, max_frames,
+                 min_touch_frames, min_duration_frames, tracked_pairs=None):
         self.touch_thresh      = touch_thresh
         self.d_exit            = d_exit
+        self.d_proximity = d_proximity
         self.max_frames        = max_frames
         self.min_touch_frames  = min_touch_frames
+        self.min_duration_frames = min_duration_frames
+
+        # Stability Mechanism Parameters
+        self.jump_thresh = JUMP_THRESH
+        self.stability_window = STABILITY_WINDOW
+        self.stable_fraction = STABLE_FRACTION
+        self.stable_dist = STABLE_DIST
+        self.jumped_state = defaultdict(bool)  # Tracks the jumped state for each individual bee ID
+
+        # Buffer to keep the last N head positions per bee: bee_id -> list of head_pos
+        self.head_history = defaultdict(list)
 
         if tracked_pairs:
             self.tracked_pairs = {tuple(sorted(p)) for p in tracked_pairs}
@@ -197,6 +307,8 @@ class InteractionTracker:
         self.pair_states            = {}
         self.completed_interactions = []
         self.position_history       = defaultdict(list)
+        self.proximity_states = {}  # Tracks macro-level lingering
+        self.poi_cancellations = []  # Stores cancellation alerts for the HUD
 
     def _pair_key(self, a, b):
         return tuple(sorted([a, b]))
@@ -218,6 +330,14 @@ class InteractionTracker:
     def update(self, frame_groups, all_bee_ids, frame_number):
         for bee_id in all_bee_ids:
             kp = get_bee_keypoints(frame_groups, bee_id, frame_number)
+
+            # Update rolling head history for stability checks
+            h_pos = head_pos(kp) if kp is not None else None
+            self.head_history[bee_id].append(h_pos)
+            # Trim the buffer to window size
+            if len(self.head_history[bee_id]) > self.stability_window:
+                self.head_history[bee_id].pop(0)
+
             if kp is not None:
                 pos = body_pos(kp)
                 if pos is not None:
@@ -250,7 +370,108 @@ class InteractionTracker:
 
                 self._step(st, idA, idB, frame_number, kpA, kpB, posA, posB, center_candidate)
 
+    def _is_head_stable(self, bee_id, frame_number):
+        """
+        Evaluates if the bee's head is stable. Activates the window-averaging
+        mechanism if a jump or missing frame is detected.
+        """
+        history = self.head_history[bee_id]
+        if not history:
+            return False
+
+        curr = history[-1]
+        prev = history[-2] if len(history) > 1 else curr
+
+        # Condition 1: Check for jump or missing data
+        jumped = (curr is None) or (prev is None) or (pdist(curr, prev) > self.jump_thresh)
+        if jumped:
+            self.jumped_state[bee_id] = True
+
+        if not jumped and not self.jumped_state[bee_id]:
+            return True  # Normal, continuous movement
+
+        # Condition 2: Activate Mechanism (Lookback Window)
+
+        # Immediate rejection if the current frame is missing
+        if curr is None:
+            return False
+
+        valid_heads = [h for h in history if h is not None]
+        if not valid_heads:
+            return False  # No valid data points to form an average
+
+        # Calculate average of all valid frames in the window
+        avg_x = sum(h[0] for h in valid_heads) / len(valid_heads)
+        avg_y = sum(h[1] for h in valid_heads) / len(valid_heads)
+        avg_pt = (avg_x, avg_y)
+
+        # Immediate rejection if the current jump is far from the true average
+        if pdist(curr, avg_pt) > self.stable_dist:
+            return False
+
+        # Count how many frames in the history window are close to the average
+        stable_count = 0
+        for h in history:
+            if h is not None and pdist(h, avg_pt) <= self.stable_dist:
+                stable_count += 1
+
+        # Check if the required fraction of frames is met
+        if (stable_count / len(history)) >= self.stable_fraction:
+            self.jumped_state[bee_id] = False
+            # print(bee_id, frame_number, stable_count)
+            return True
+
+        return False
+
     def _step(self, st, idA, idB, frame_number, kpA, kpB, posA, posB, center_candidate):
+        headA = head_pos(kpA)
+        headB = head_pos(kpB)
+        # Evaluate Head Stability for both bees
+        heads_stable = self._is_head_stable(idA, frame_number) and self._is_head_stable(
+            idB, frame_number)
+
+        # --- PROXIMITY SESSION TRACKING ---
+        pk = self._pair_key(idA, idB)
+        if pk not in self.proximity_states:
+            self.proximity_states[pk] = {"active": False, "start_frame": None,
+                                         "interactions": []}
+
+        p_st = self.proximity_states[pk]
+
+        if headA is not None and headB is not None and heads_stable:
+            dist_heads = pdist(headA, headB)
+
+            # We ONLY process the proximity boundary if a session was triggered by an interaction
+            if p_st["active"]:
+                if dist_heads > self.d_proximity:
+                    # They finally separated. Check how long they were together.
+                    duration = frame_number - p_st["start_frame"]
+                    if duration > MAX_PROXIMITY_FRAMES:
+                        canceled_count = 0
+                        # Retroactively cancel all valid interactions logged during this session
+                        for idx in p_st["interactions"]:
+                            if self.completed_interactions[idx][
+                                "winner"] != "canceled":
+                                self.completed_interactions[idx][
+                                    "winner"] = "canceled"
+                                self.completed_interactions[idx][
+                                    "loser"] = "canceled"
+                                self.completed_interactions[idx][
+                                    "reason"] = "lingering_at_poi"
+                                canceled_count += 1
+
+                        # Send an alert to the visualizer if we actually canceled anything
+                        if canceled_count > 0:
+                            self.poi_cancellations.append((
+                                                          frame_number,
+                                                          idA, idB,
+                                                          canceled_count))
+
+                    # Reset proximity session
+                    p_st["active"] = False
+                    p_st["start_frame"] = None
+                    p_st["interactions"] = []
+
         if st["state"] == InteractionState.IDLE:
             if center_candidate is not None:
                 st["touch_streak"]  += 1
@@ -264,6 +485,12 @@ class InteractionTracker:
                     st["frame_count"]    = st["touch_streak"]
                     st["touch_streak"]   = 0
                     st["pending_center"] = None
+
+                    # Activate the proximity session the moment an interaction actually begins
+                    if not p_st["active"]:
+                        p_st["active"] = True
+                        p_st["start_frame"] = frame_number
+
             else:
                 st["touch_streak"]   = 0
                 st["pending_center"] = None
@@ -278,11 +505,11 @@ class InteractionTracker:
             # ── Feature 1: suspend exit checks while either head is absent ──────
             headA = head_pos(kpA)
             headB = head_pos(kpB)
-            if headA is None or headB is None:
-                # No decision until both heads are visible again
-                if st["frame_count"] > self.max_frames:
-                    self._record_canceled(st, idA, idB, frame_number, float("inf"), float("inf"))
-                    self._reset(st)
+            if headA is None or headB is None or not heads_stable:
+                # No decision until both heads are visible and stable again
+                # if st["frame_count"] > self.max_frames:
+                #     self._record_canceled(st, idA, idB, frame_number, float("inf"), float("inf"))
+                #     self._reset(st)
                 return
 
             center = st["center"]
@@ -305,11 +532,24 @@ class InteractionTracker:
                 return
 
             # ── Cancellation ──────────────────────────────────────────────────
-            if st["frame_count"] > self.max_frames:
-                self._record_canceled(st, idA, idB, frame_number, dA, dB)
-                self._reset(st)
+            # if st["frame_count"] > self.max_frames:
+            #     self._record_canceled(st, idA, idB, frame_number, dA, dB)
+            #     self._reset(st)
 
     def _end(self, st, idA, idB, frame_number, loser_id, reason, dA, dB):
+        # 1. Route to cancellation if it was too brief
+        if st["frame_count"] < self.min_duration_frames:
+            self._record_canceled(st, idA, idB, frame_number, dA, dB,
+                                  cancel_reason="too_short")
+            return
+
+        # 2. Route to cancellation if they were stuck together too long
+        if st["frame_count"] > self.max_frames:
+            self._record_canceled(st, idA, idB, frame_number, dA, dB,
+                                  cancel_reason="max_duration_exceeded")
+            return
+
+        # 3. Normal completion
         winner_id = idB if loser_id == idA else idA
         self.completed_interactions.append({
             "bee1_id":            idA,
@@ -324,7 +564,14 @@ class InteractionTracker:
             "reason":             reason,
         })
 
-    def _record_canceled(self, st, idA, idB, frame_number, dA, dB):
+        # Link this interaction to the active proximity session
+        pk = self._pair_key(idA, idB)
+        if self.proximity_states[pk]["active"]:
+            idx = len(self.completed_interactions) - 1
+            self.proximity_states[pk]["interactions"].append(idx)
+
+
+    def _record_canceled(self, st, idA, idB, frame_number, dA, dB, cancel_reason):
         self.completed_interactions.append({
             "bee1_id":            idA,
             "bee2_id":            idB,
@@ -335,7 +582,7 @@ class InteractionTracker:
             "loser":              "canceled",
             "dist_from_center_A": float(dA),
             "dist_from_center_B": float(dB),
-            "reason":             "max_duration_exceeded",
+            "reason":             cancel_reason,
         })
 
     def _reset(self, st):
@@ -392,9 +639,12 @@ def compute_exit_threshold(frame_groups):
 
     avg = float(np.mean(distances))
     d_exit = avg * D_EXIT_FACTOR
+    d_prox = avg * D_PROX_FACTOR
     print(f"  Avg bee body length : {avg:.1f} px  (n={len(distances)}, frames=first 500)")
     print(f"  D_EXIT              = {avg:.1f} × {D_EXIT_FACTOR} = {d_exit:.1f} px")
-    return d_exit
+    print(f"  D_PROXIMITY         = {avg:.1f} × {D_PROX_FACTOR} = {d_prox:.1f} px")
+
+    return d_exit, d_prox
 
 
 # ── Processing pass ────────────────────────────────────────────────────────────
@@ -416,7 +666,7 @@ def process_video(video_path, csv_path):
     print(f"\nLoaded CSV: {len(all_ids)} tracks, {len(frame_groups)} annotated frames")
 
     print("\nComputing adaptive exit threshold from first 500 frames...")
-    d_exit = compute_exit_threshold(frame_groups)
+    d_exit, d_prox = compute_exit_threshold(frame_groups)
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -426,8 +676,8 @@ def process_video(video_path, csv_path):
     print(f"Video: {total_frames} frames")
 
     tracker = InteractionTracker(
-        TOUCH_THRESH, d_exit, MAX_INTERACTION_FRAMES,
-        MIN_TOUCH_FRAMES, TRACKED_PAIRS or None,
+        TOUCH_THRESH, d_exit, d_prox, MAX_INTERACTION_FRAMES,
+        MIN_TOUCH_FRAMES, MIN_DURATION_FRAMES, TRACKED_PAIRS or None,
     )
 
     print("\nProcessing frames...\n")
@@ -542,11 +792,11 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
         out    = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
         print(f"Output: {out_path}")
 
-    d_exit = compute_exit_threshold(frame_groups)
+    d_exit, d_prox = compute_exit_threshold(frame_groups)
 
     viz_tracker = InteractionTracker(
-        TOUCH_THRESH, d_exit, MAX_INTERACTION_FRAMES,
-        MIN_TOUCH_FRAMES, TRACKED_PAIRS or None,
+        TOUCH_THRESH, d_exit, d_prox, MAX_INTERACTION_FRAMES,
+        MIN_TOUCH_FRAMES, MIN_DURATION_FRAMES, TRACKED_PAIRS or None,
     )
 
     C = {
@@ -559,6 +809,8 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
         "event_start":   (0,   255,   0),
         "event_end":     (255, 255,   0),
         "event_cancel":  (0,    80, 255),
+        "proximity_line": (255, 150, 0),  # Orange for the head distance line
+        "event_poi_cancel": (0, 0, 255),  # Bright Red for the HUD message
     }
 
     recent_events = []
@@ -592,13 +844,23 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
                 a, b, w = ix["bee1_id"], ix["bee2_id"], ix["winner"]
                 reason   = ix.get("reason", "")
                 if w == "canceled":
-                    recent_events.append((frame_number,
-                                          f"CANCELED: {fmt_bee(a)} <-> {fmt_bee(b)}",
-                                          C["event_cancel"]))
+                    # Check reason to differentiate HUD message
+                    if reason == "too_short":
+                        msg = f"CANCELED (too short): {fmt_bee(a)} <-> {fmt_bee(b)}"
+                    else:
+                        msg = f"CANCELED (too long): {fmt_bee(a)} <-> {fmt_bee(b)}"
+
+                    recent_events.append((frame_number, msg, C["event_cancel"]))
                 else:
                     recent_events.append((frame_number,
                                           f"END: {fmt_bee(a)} <-> {fmt_bee(b)}  winner={fmt_bee(w)}",
                                           C["event_end"]))
+
+        # Catch POI retroactive cancellations
+        while viz_tracker.poi_cancellations:
+            c_frame, c_idA, c_idB, c_count = viz_tracker.poi_cancellations.pop(0)
+            msg = f"POI CANCEL: {fmt_bee(c_idA)} <-> {fmt_bee(c_idB)} ({c_count} interactions)"
+            recent_events.append((frame_number, msg, C["event_poi_cancel"]))
 
         recent_events = [e for e in recent_events if frame_number - e[0] < 90]
 
@@ -637,6 +899,26 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
 
         # ── Draw interaction overlays ─────────────────────────────────────────
+        # Draw Proximity / POI Lines
+        for pk, p_st in viz_tracker.proximity_states.items():
+            if p_st["active"]:
+                idA, idB = pk
+                headA = head_pos(bee_kp.get(idA))
+                headB = head_pos(bee_kp.get(idB))
+
+                if headA and headB:
+                    # Draw the line between the heads
+                    _draw_seg(frame, headA, headB, C["proximity_line"],
+                              thickness=1)
+
+                    # Add a text readout of the live distance
+                    dist = pdist(headA, headB)
+                    cx = int((headA[0] + headB[0]) / 2)
+                    cy = int((headA[1] + headB[1]) / 2)
+                    cv2.putText(frame, f"{dist:.0f}px", (cx, cy - 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                                C["proximity_line"], 1, cv2.LINE_AA)
+
         for pk, si in viz_tracker.pair_states.items():
             idA, idB = pk
             posA = bee_pos.get(idA)
@@ -830,11 +1112,15 @@ if __name__ == "__main__":
     if not Path(csv_path).exists():
         sys.exit(f"CSV not found: {csv_path}")
 
-    summary, tracker = process_video(video_path, csv_path)
+    # Define output path and enrich the CSV
+    enriched_csv_path = str(out / "enriched_tracking_data.csv") if args.output_dir else "enriched_tracking_data.csv"
+    create_enriched_csv(csv_path, enriched_csv_path)
+
+    summary, tracker = process_video(video_path, enriched_csv_path)
     save_results(summary, output_json, output_csv)
 
     print("\n" + "=" * 70)
     print("Generating Visualization")
     print("=" * 70)
-    visualize(video_path, csv_path, show=SHOW_LIVE, save=SAVE_VIDEO,
+    visualize(video_path, enriched_csv_path, show=SHOW_LIVE, save=SAVE_VIDEO,
               output_video_path=output_video)
