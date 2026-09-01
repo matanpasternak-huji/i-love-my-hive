@@ -73,6 +73,12 @@ STABLE_FRACTION = 0.8
 # Max distance from the window's average head position to be counted as 'stable'
 STABLE_DIST = 20
 
+# ── Proximity / POI Filter ────────────────────────────────────────────────────
+# Factor for the large macro-boundary (distance between heads) to group interactions
+D_PROX_FACTOR = 2.1
+# If bees stay within the macro-boundary for longer than this, cancel enclosed interactions
+MAX_PROXIMITY_FRAMES = 1650
+
 # Output
 OUTPUT_JSON  = "interactions_antennation.json"
 OUTPUT_CSV   = "interactions_antennation.csv"
@@ -274,10 +280,11 @@ def check_antennation(kpA, kpB):
 # ── Interaction tracker ────────────────────────────────────────────────────────
 
 class InteractionTracker:
-    def __init__(self, touch_thresh, d_exit, max_frames,
+    def __init__(self, touch_thresh, d_exit, d_proximity, max_frames,
                  min_touch_frames, min_duration_frames, tracked_pairs=None):
         self.touch_thresh      = touch_thresh
         self.d_exit            = d_exit
+        self.d_proximity = d_proximity
         self.max_frames        = max_frames
         self.min_touch_frames  = min_touch_frames
         self.min_duration_frames = min_duration_frames
@@ -300,6 +307,8 @@ class InteractionTracker:
         self.pair_states            = {}
         self.completed_interactions = []
         self.position_history       = defaultdict(list)
+        self.proximity_states = {}  # Tracks macro-level lingering
+        self.poi_cancellations = []  # Stores cancellation alerts for the HUD
 
     def _pair_key(self, a, b):
         return tuple(sorted([a, b]))
@@ -415,10 +424,53 @@ class InteractionTracker:
         return False
 
     def _step(self, st, idA, idB, frame_number, kpA, kpB, posA, posB, center_candidate):
-
+        headA = head_pos(kpA)
+        headB = head_pos(kpB)
         # Evaluate Head Stability for both bees
         heads_stable = self._is_head_stable(idA, frame_number) and self._is_head_stable(
             idB, frame_number)
+
+        # --- PROXIMITY SESSION TRACKING ---
+        pk = self._pair_key(idA, idB)
+        if pk not in self.proximity_states:
+            self.proximity_states[pk] = {"active": False, "start_frame": None,
+                                         "interactions": []}
+
+        p_st = self.proximity_states[pk]
+
+        if headA is not None and headB is not None and heads_stable:
+            dist_heads = pdist(headA, headB)
+
+            # We ONLY process the proximity boundary if a session was triggered by an interaction
+            if p_st["active"]:
+                if dist_heads > self.d_proximity:
+                    # They finally separated. Check how long they were together.
+                    duration = frame_number - p_st["start_frame"]
+                    if duration > MAX_PROXIMITY_FRAMES:
+                        canceled_count = 0
+                        # Retroactively cancel all valid interactions logged during this session
+                        for idx in p_st["interactions"]:
+                            if self.completed_interactions[idx][
+                                "winner"] != "canceled":
+                                self.completed_interactions[idx][
+                                    "winner"] = "canceled"
+                                self.completed_interactions[idx][
+                                    "loser"] = "canceled"
+                                self.completed_interactions[idx][
+                                    "reason"] = "lingering_at_poi"
+                                canceled_count += 1
+
+                        # Send an alert to the visualizer if we actually canceled anything
+                        if canceled_count > 0:
+                            self.poi_cancellations.append((
+                                                          frame_number,
+                                                          idA, idB,
+                                                          canceled_count))
+
+                    # Reset proximity session
+                    p_st["active"] = False
+                    p_st["start_frame"] = None
+                    p_st["interactions"] = []
 
         if st["state"] == InteractionState.IDLE:
             if center_candidate is not None:
@@ -433,6 +485,12 @@ class InteractionTracker:
                     st["frame_count"]    = st["touch_streak"]
                     st["touch_streak"]   = 0
                     st["pending_center"] = None
+
+                    # Activate the proximity session the moment an interaction actually begins
+                    if not p_st["active"]:
+                        p_st["active"] = True
+                        p_st["start_frame"] = frame_number
+
             else:
                 st["touch_streak"]   = 0
                 st["pending_center"] = None
@@ -506,6 +564,13 @@ class InteractionTracker:
             "reason":             reason,
         })
 
+        # Link this interaction to the active proximity session
+        pk = self._pair_key(idA, idB)
+        if self.proximity_states[pk]["active"]:
+            idx = len(self.completed_interactions) - 1
+            self.proximity_states[pk]["interactions"].append(idx)
+
+
     def _record_canceled(self, st, idA, idB, frame_number, dA, dB, cancel_reason):
         self.completed_interactions.append({
             "bee1_id":            idA,
@@ -574,9 +639,12 @@ def compute_exit_threshold(frame_groups):
 
     avg = float(np.mean(distances))
     d_exit = avg * D_EXIT_FACTOR
+    d_prox = avg * D_PROX_FACTOR
     print(f"  Avg bee body length : {avg:.1f} px  (n={len(distances)}, frames=first 500)")
     print(f"  D_EXIT              = {avg:.1f} × {D_EXIT_FACTOR} = {d_exit:.1f} px")
-    return d_exit
+    print(f"  D_PROXIMITY         = {avg:.1f} × {D_PROX_FACTOR} = {d_prox:.1f} px")
+
+    return d_exit, d_prox
 
 
 # ── Processing pass ────────────────────────────────────────────────────────────
@@ -598,7 +666,7 @@ def process_video(video_path, csv_path):
     print(f"\nLoaded CSV: {len(all_ids)} tracks, {len(frame_groups)} annotated frames")
 
     print("\nComputing adaptive exit threshold from first 500 frames...")
-    d_exit = compute_exit_threshold(frame_groups)
+    d_exit, d_prox = compute_exit_threshold(frame_groups)
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -608,7 +676,7 @@ def process_video(video_path, csv_path):
     print(f"Video: {total_frames} frames")
 
     tracker = InteractionTracker(
-        TOUCH_THRESH, d_exit, MAX_INTERACTION_FRAMES,
+        TOUCH_THRESH, d_exit, d_prox, MAX_INTERACTION_FRAMES,
         MIN_TOUCH_FRAMES, MIN_DURATION_FRAMES, TRACKED_PAIRS or None,
     )
 
@@ -724,10 +792,10 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
         out    = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
         print(f"Output: {out_path}")
 
-    d_exit = compute_exit_threshold(frame_groups)
+    d_exit, d_prox = compute_exit_threshold(frame_groups)
 
     viz_tracker = InteractionTracker(
-        TOUCH_THRESH, d_exit, MAX_INTERACTION_FRAMES,
+        TOUCH_THRESH, d_exit, d_prox, MAX_INTERACTION_FRAMES,
         MIN_TOUCH_FRAMES, MIN_DURATION_FRAMES, TRACKED_PAIRS or None,
     )
 
@@ -741,6 +809,8 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
         "event_start":   (0,   255,   0),
         "event_end":     (255, 255,   0),
         "event_cancel":  (0,    80, 255),
+        "proximity_line": (255, 150, 0),  # Orange for the head distance line
+        "event_poi_cancel": (0, 0, 255),  # Bright Red for the HUD message
     }
 
     recent_events = []
@@ -786,6 +856,12 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
                                           f"END: {fmt_bee(a)} <-> {fmt_bee(b)}  winner={fmt_bee(w)}",
                                           C["event_end"]))
 
+        # Catch POI retroactive cancellations
+        while viz_tracker.poi_cancellations:
+            c_frame, c_idA, c_idB, c_count = viz_tracker.poi_cancellations.pop(0)
+            msg = f"POI CANCEL: {fmt_bee(c_idA)} <-> {fmt_bee(c_idB)} ({c_count} interactions)"
+            recent_events.append((frame_number, msg, C["event_poi_cancel"]))
+
         recent_events = [e for e in recent_events if frame_number - e[0] < 90]
 
         # ── Per-bee keypoints for this frame ──────────────────────────────────
@@ -823,6 +899,26 @@ def visualize(video_path, csv_path, show=True, save=True, output_video_path=None
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
 
         # ── Draw interaction overlays ─────────────────────────────────────────
+        # Draw Proximity / POI Lines
+        for pk, p_st in viz_tracker.proximity_states.items():
+            if p_st["active"]:
+                idA, idB = pk
+                headA = head_pos(bee_kp.get(idA))
+                headB = head_pos(bee_kp.get(idB))
+
+                if headA and headB:
+                    # Draw the line between the heads
+                    _draw_seg(frame, headA, headB, C["proximity_line"],
+                              thickness=1)
+
+                    # Add a text readout of the live distance
+                    dist = pdist(headA, headB)
+                    cx = int((headA[0] + headB[0]) / 2)
+                    cy = int((headA[1] + headB[1]) / 2)
+                    cv2.putText(frame, f"{dist:.0f}px", (cx, cy - 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                                C["proximity_line"], 1, cv2.LINE_AA)
+
         for pk, si in viz_tracker.pair_states.items():
             idA, idB = pk
             posA = bee_pos.get(idA)
