@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import cv2
+from opencv_check import fix_instructions, opencv_problem
 
 
 def video_frame_count(path: str) -> int:
@@ -25,6 +25,8 @@ def video_frame_count(path: str) -> int:
     count for some mp4 encodings, which makes SLEAP/NAPS try to read frames
     that don't exist. Counting by reading through avoids that mismatch.
     """
+    import cv2  # imported here so a broken OpenCV is reported by the pre-flight check
+
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         sys.exit(f"[ERROR] Could not open video to count frames: {path}")
@@ -141,6 +143,11 @@ def main(input_video: str = None, output_dir: str = None, model: str = None) -> 
         sys.exit(f"[ERROR] Input video not found: {video}")
     if not Path(model).exists():
         sys.exit(f"[ERROR] Multi-instance model not found: {model}")
+    # NAPS (stage 2) needs OpenCV's contrib aruco API. Check now, so a wrong
+    # OpenCV fails in seconds instead of after minutes of SLEAP inference.
+    problem = opencv_problem()
+    if problem:
+        sys.exit(f"[ERROR] {problem}\n{fix_instructions()}")
 
     Path(raw_slp).parent.mkdir(parents=True, exist_ok=True)
     Path(corrected_slp).parent.mkdir(parents=True, exist_ok=True)

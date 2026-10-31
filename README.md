@@ -74,14 +74,10 @@ Required Python packages:
    ```
 3. Install the dependencies:
    ```bash
-   pip install -r requirements.txt
+   python install_requirements.py
    ```
-4. Swap OpenCV for the contrib build (NAPS needs `cv2.aruco`, which plain `opencv-python` lacks):
-   ```bash
-   pip uninstall -y opencv-python
-   pip install opencv-contrib-python~=4.6.0.66
-   ```
-5. (Optional) Run the tests:
+   This runs `pip install -r requirements.txt` and then makes sure OpenCV is the contrib build NAPS needs (`cv2.aruco`). Use it instead of a plain `pip install -r requirements.txt`, which can leave a plain OpenCV without `cv2.aruco` — and run it again after installing other packages into the environment. If OpenCV is wrong, the pipeline stops immediately with this same fix command; you can also check any time with `python opencv_check.py`.
+4. (Optional) Run the tests:
    ```bash
    python -m pytest
    ```
