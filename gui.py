@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QUrl
-from PyQt5.QtGui import QColor, QDesktopServices, QPalette
+from PyQt5.QtGui import QColor, QDesktopServices, QIcon, QPalette
 from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QStackedWidget
 
 from gui_pages.home import HomePage
@@ -124,11 +124,35 @@ class MainWindow(QMainWindow):
         super(MainWindow, self).closeEvent(event)
 
 
+def _log_to_file_if_windowless():
+    """Under pythonw.exe (Desktop shortcut on Windows) there is no stdout/stderr:
+    send them to .tools/gui.log so errors are not lost."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    log_dir = PROJECT_DIR / ".tools"
+    log_dir.mkdir(exist_ok=True)
+    log = open(str(log_dir / "gui.log"), "a", encoding="utf-8", buffering=1)
+    sys.stdout = sys.stdout or log
+    sys.stderr = sys.stderr or log
+
+
 def main():
+    _log_to_file_if_windowless()
+    if sys.platform == "win32":
+        # Own taskbar entry/icon instead of being grouped under pythonw.exe.
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "huji.BeeInteractionDetector")
+        except Exception:
+            pass
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
     app.setApplicationName("Bee Interaction Detector")
+    icon_path = PROJECT_DIR / "media" / "app_icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     app.setStyle("Fusion")
     app.setPalette(dark_palette())
     win = MainWindow()

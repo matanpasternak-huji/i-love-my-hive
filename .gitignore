@@ -14,6 +14,10 @@ env/
 .DS_Store
 Thumbs.db
 
+# One-click installer: private uv / Python / caches / GUI log, and release builds
+.tools/
+dist/
+
 # Models (large; distributed separately — path is set in config.json)
 Current Model/
 

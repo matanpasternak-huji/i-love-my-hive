@@ -1,0 +1,5 @@
+# Windows batch files must use CRLF (labels/goto misbehave with LF-only files).
+*.bat     text eol=crlf
+# Shell scripts must use LF or bash fails with "\r: command not found".
+*.command text eol=lf
+*.sh      text eol=lf

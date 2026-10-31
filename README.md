@@ -61,7 +61,15 @@ Required Python packages:
 - `sleap`
 - `naps-track`
 
-### 🏗️ Installing
+### 🖱️ Easy install (no coding needed)
+For end users on Windows or macOS: download the latest `BeeInteractionDetector-<version>.zip` from the [Releases page](https://github.com/matanpasternak-huji/i-love-my-hive/releases), unzip it, and double-click `Install-Windows.bat` or `Install-Mac.command`. The installer downloads its own Python 3.10 and all packages into the program folder (nothing is installed system-wide) and creates a **Bee Interaction Detector** icon on the Desktop. Step-by-step instructions, including the one-time security prompts, are in [`HOW_TO_INSTALL.txt`](HOW_TO_INSTALL.txt).
+
+To build that zip (code at `HEAD` + the active model from `config.json`):
+```bash
+python installer/build_release.py v1.0.0   # -> dist/BeeInteractionDetector-v1.0.0.zip
+```
+
+### 🏗️ Installing (developers)
 1. Clone the repository:
    ```bash
    git clone https://github.com/matanpasternak-huji/i-love-my-hive.git
