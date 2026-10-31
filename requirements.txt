@@ -21,9 +21,8 @@ pytest~=7.4.4
 inflect~=5.6.2
 zipp
 Pygments
-torch
-ultralytics
-numpy
+# SLEAP 1.4.1 / naps-track break on numpy >= 1.23 (and numpy 2 fails to import h5py).
+numpy<1.23
 pandas
 pytest-qt
 PyQt5
@@ -32,7 +31,10 @@ psutil  # GUI: stop the whole pipeline process tree on cancel
 # SLEAP + NAPS (bee tracking pipeline). The bare `sleap` package on PyPI skips
 # its real dependencies -- the [pypi] extra is required.
 sleap[pypi]~=1.4.1
-naps-track~=1.0.9
+# sleap[pypi] 1.4.1 caps attrs at 21.4; jsonschema >= 4.18 (via jupyter) needs attrs >= 22.2.
+jsonschema<4.18
+# naps-track >= 1.0.3 pins sleap==1.3.0, which conflicts with sleap 1.4.1.
+naps-track==1.0.2
 
 # `sleap[pypi]` pulls in plain opencv-python, but naps-track needs cv2.aruco,
 # which that package doesn't ship. After installing this file, run once more:
