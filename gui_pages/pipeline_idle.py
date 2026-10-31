@@ -9,6 +9,15 @@ from PyQt5.QtWidgets import (
 
 from gui_widgets import DropZone
 
+# Keep in sync with the module-level defaults in find_interactions_by_antennation.py
+# (tests/test_pipeline_page.py checks this).
+DEFAULT_D_EXIT_FACTOR          = 1.0
+DEFAULT_MAX_INTERACTION_FRAMES = 1500
+DEFAULT_MIN_TOUCH_FRAMES       = 6
+DEFAULT_TOUCH_THRESH           = 40
+
+VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv")
+
 _TOOLTIPS = {
     "Exit Radius": (
         "How far a bee's head must move from the interaction centre "
@@ -66,14 +75,20 @@ class _ParamCell(QFrame):
         # type: () -> None
         dlg = QDialog(self)
         dlg.setWindowFlags(Qt.Popup)
-        dlg.setStyleSheet("background:#161b22; color:#f0f6fc;")
+        dlg.setStyleSheet(
+            "QDialog { background:#161b22; border:1px solid #30363d; border-radius:6px; }"
+            "QLabel { color:#f0f6fc; background:transparent; }"
+        )
         lbl = QLabel(self._tooltip_text, dlg)
         lbl.setWordWrap(True)
         lbl.setMargin(12)
-        lbl.setMaximumWidth(280)
+        lbl.setFixedWidth(280)
         v = QVBoxLayout(dlg)
+        v.setContentsMargins(0, 0, 0, 0)
         v.addWidget(lbl)
         dlg.adjustSize()
+        # Show the popup just below this cell instead of wherever the WM puts it.
+        dlg.move(self.mapToGlobal(self.rect().bottomLeft()))
         dlg.exec_()
 
 
@@ -109,34 +124,37 @@ class PipelinePage(QWidget):
 
         # Video
         layout.addWidget(self._sec_label("VIDEO FILE"))
-        self._drop = DropZone("🎬  Drop .mp4 here", filter="Video (*.mp4)", parent=self)
+        self._drop = DropZone(
+            "🎬  Drop a video here",
+            filter="Video ({})".format(" ".join("*" + e for e in VIDEO_EXTENSIONS)),
+            extensions=VIDEO_EXTENSIONS,
+            parent=self,
+        )
         self._drop.path_selected.connect(self._on_video_selected)
         layout.addWidget(self._drop)
 
         # Active model badge
         layout.addWidget(self._sec_label("ACTIVE MODEL"))
-        self._model_badge = QLabel("●  {}".format(self._app_state.model_name))
-        self._model_badge.setStyleSheet(
-            "color:#3fb950; background:#0d1117; border:1px solid #238636;"
-            " border-radius:4px; padding:5px 8px;"
-        )
+        self._model_badge = QLabel()
+        self._model_badge.setWordWrap(True)
         layout.addWidget(self._model_badge)
+        self.refresh_model_badge()
 
         # Parameters
         layout.addWidget(self._sec_label("PARAMETERS"))
         self._exit_radius  = QDoubleSpinBox()
         self._exit_radius.setRange(0.1, 10.0)
         self._exit_radius.setSingleStep(0.1)
-        self._exit_radius.setValue(1.0)
+        self._exit_radius.setValue(DEFAULT_D_EXIT_FACTOR)
         self._cancel_time  = QSpinBox()
-        self._cancel_time.setRange(1, 9999)
-        self._cancel_time.setValue(1500)
+        self._cancel_time.setRange(1, 99999)
+        self._cancel_time.setValue(DEFAULT_MAX_INTERACTION_FRAMES)
         self._touch_frames = QSpinBox()
         self._touch_frames.setRange(1, 100)
-        self._touch_frames.setValue(1)
+        self._touch_frames.setValue(DEFAULT_MIN_TOUCH_FRAMES)
         self._touch_dist   = QSpinBox()
         self._touch_dist.setRange(1, 500)
-        self._touch_dist.setValue(50)
+        self._touch_dist.setValue(DEFAULT_TOUCH_THRESH)
 
         grid = QGridLayout()
         grid.setSpacing(5)
@@ -191,7 +209,21 @@ class PipelinePage(QWidget):
 
     def refresh_model_badge(self):
         # type: () -> None
-        self._model_badge.setText("●  {}".format(self._app_state.model_name))
+        if self._app_state.model_exists():
+            self._model_badge.setText("●  {}".format(self._app_state.model_name))
+            self._model_badge.setStyleSheet(
+                "color:#3fb950; background:#0d1117; border:1px solid #238636;"
+                " border-radius:4px; padding:5px 8px;"
+            )
+        else:
+            self._model_badge.setText(
+                "●  {} — model folder not found, use “Update Model”".format(
+                    self._app_state.model_name)
+            )
+            self._model_badge.setStyleSheet(
+                "color:#f85149; background:#0d1117; border:1px solid #da3633;"
+                " border-radius:4px; padding:5px 8px;"
+            )
 
     def params_summary(self):
         # type: () -> str

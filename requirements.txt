@@ -27,6 +27,7 @@ numpy
 pandas
 pytest-qt
 PyQt5
+psutil  # GUI: stop the whole pipeline process tree on cancel
 
 # SLEAP + NAPS (bee tracking pipeline). The bare `sleap` package on PyPI skips
 # its real dependencies -- the [pypi] extra is required.

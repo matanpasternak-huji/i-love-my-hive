@@ -17,6 +17,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Resolve sibling scripts relative to this file so the pipeline works from any cwd.
+_HERE = Path(__file__).resolve().parent
+
 
 def run_step(description: str, cmd: list) -> None:
     """Run a subprocess, streaming its output live. Abort on failure."""
@@ -42,6 +45,8 @@ def main() -> None:
     )
     parser.add_argument("--input",  required=True, help="Path to input video")
     parser.add_argument("--output", required=True, help="Root output directory")
+    parser.add_argument("--model",  default=None,
+                        help="SLEAP model folder (default: the one set in video_to_csv.py)")
     parser.add_argument("--touch-thresh",     type=int,   default=None)
     parser.add_argument("--min-touch-frames", type=int,   default=None)
     parser.add_argument("--d-exit-factor",    type=float, default=None)
@@ -63,14 +68,14 @@ def main() -> None:
     print(f"Input video: {video_path}")
 
     # ── Step 1: SLEAP + NAPS → tracking CSV ───────────────────────────────────
-    run_step(
-        "Step 1/3 — SLEAP inference + NAPS identity correction",
-        [
-            sys.executable, "video_to_csv.py",
-            "--input",      str(video_path),
-            "--output-dir", str(run_dir),
-        ],
-    )
+    step1_cmd = [
+        sys.executable, str(_HERE / "video_to_csv.py"),
+        "--input",      str(video_path),
+        "--output-dir", str(run_dir),
+    ]
+    if args.model:
+        step1_cmd += ["--model", str(Path(args.model).resolve())]
+    run_step("Step 1/3 — SLEAP inference + NAPS identity correction", step1_cmd)
 
     tracking_csv = run_dir / "tracking_data.csv"
     if not tracking_csv.exists():
@@ -78,7 +83,7 @@ def main() -> None:
 
     # ── Step 2: interaction detection ─────────────────────────────────────────
     step2_cmd = [
-        sys.executable, "find_interactions_by_antennation.py",
+        sys.executable, str(_HERE / "find_interactions_by_antennation.py"),
         "--video",      str(video_path),
         "--csv",        str(tracking_csv),
         "--output-dir", str(run_dir),
@@ -106,7 +111,7 @@ def main() -> None:
     run_step(
         "Step 3/3 — Split interactions by bee group",
         [
-            sys.executable, "split_to_groups.py",
+            sys.executable, str(_HERE / "split_to_groups.py"),
             "--input",      str(interactions_csv),
             "--output-dir", str(run_dir),
         ],

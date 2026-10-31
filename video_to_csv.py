@@ -2,9 +2,9 @@
 """
 Video → CSV Pipeline (SLEAP + NAPS)
 
-Step 1 — SLEAP multi-instance inference : sleap-track  → raw .slp
-Step 2 — NAPS identity correction       : naps-track   → corrected .slp
-Step 3 — SLEAP CSV export               : sleap-convert → .csv
+Stage 1 — SLEAP multi-instance inference : sleap-track  → raw .slp
+Stage 2 — NAPS identity correction       : naps-track   → corrected .slp
+Stage 3 — SLEAP CSV export               : sleap-convert → .csv
 
 The final CSV has the same structure as labels.v013_infr-naps.csv and can be
 fed directly into find_interactions_by_antennation.py.
@@ -36,6 +36,20 @@ def video_frame_count(path: str) -> int:
         n += 1
     cap.release()
     return n
+
+
+def tool(name: str) -> str:
+    """Resolve a console script (sleap-track, naps-track, ...) to a full path.
+
+    Prefer the copy installed next to the running interpreter, so the pipeline
+    works even when the virtualenv's bin/ directory isn't on PATH (e.g. when
+    launched from the GUI or an IDE without activating the venv).
+    """
+    bin_dir = Path(sys.executable).parent
+    for candidate in (bin_dir / name, bin_dir / f"{name}.exe"):
+        if candidate.exists():
+            return str(candidate)
+    return name
 
 # ==================== CONFIGURATION ====================
 
@@ -86,18 +100,20 @@ def run(description: str, cmd: list) -> None:
     print(f"\n[OK] {description} completed successfully.")
 
 
-def main(input_video: str = None, output_dir: str = None) -> str:
+def main(input_video: str = None, output_dir: str = None, model: str = None) -> str:
     """
     Run the full SLEAP + NAPS pipeline.
 
     Args:
         input_video: path to the source video (overrides INPUT_VIDEO config)
         output_dir:  directory where all outputs are written (overrides defaults)
+        model:       SLEAP model folder (overrides MULTI_INSTANCE_MODEL config)
 
     Returns:
         Path to the final CSV file.
     """
     video = input_video or INPUT_VIDEO
+    model = model or MULTI_INSTANCE_MODEL
 
     if output_dir:
         out = Path(output_dir)
@@ -112,8 +128,8 @@ def main(input_video: str = None, output_dir: str = None) -> str:
     # ── Pre-flight checks ──────────────────────────────────────────────────────
     if not Path(video).exists():
         sys.exit(f"[ERROR] Input video not found: {video}")
-    if not Path(MULTI_INSTANCE_MODEL).exists():
-        sys.exit(f"[ERROR] Multi-instance model not found: {MULTI_INSTANCE_MODEL}")
+    if not Path(model).exists():
+        sys.exit(f"[ERROR] Multi-instance model not found: {model}")
 
     Path(raw_slp).parent.mkdir(parents=True, exist_ok=True)
     Path(corrected_slp).parent.mkdir(parents=True, exist_ok=True)
@@ -127,15 +143,16 @@ def main(input_video: str = None, output_dir: str = None) -> str:
 
     print("\nBee Tracking Pipeline: SLEAP + NAPS")
     print(f"  Input video      : {video}")
+    print(f"  Model            : {model}")
     print(f"  Raw SLP output   : {raw_slp}")
     print(f"  Corrected SLP    : {corrected_slp}")
     print(f"  Final CSV        : {final_csv}")
 
     # ── Step 1: SLEAP multi-instance inference ────────────────────────────────
     sleap_track_cmd = [
-        "sleap-track",
+        tool("sleap-track"),
         video,
-        "--model", MULTI_INSTANCE_MODEL,
+        "--model", model,
         "--tracking.tracker", "simple",
         "--frames", f"0-{last_frame}",
         "--output", raw_slp,
@@ -145,7 +162,9 @@ def main(input_video: str = None, output_dir: str = None) -> str:
         # op on Apple Silicon; CPU inference is the reliable path there.
         sleap_track_cmd.append("--cpu")
 
-    run("Step 1/3 — SLEAP multi-instance inference", sleap_track_cmd)
+    # Sub-steps are labelled "Stage" (not "Step") so they don't collide with
+    # main.py's top-level "Step N/3" markers, which the GUI parses for progress.
+    run("Stage 1/3 — SLEAP multi-instance inference", sleap_track_cmd)
 
     # ── Step 2: NAPS identity correction ──────────────────────────────────────
     naps_end_frame = NAPS_END_FRAME
@@ -154,9 +173,9 @@ def main(input_video: str = None, output_dir: str = None) -> str:
         print(f"  NAPS end frame   : {naps_end_frame} (auto-detected)")
 
     run(
-        "Step 2/3 — NAPS identity correction (ArUco barcode tracking)",
+        "Stage 2/3 — NAPS identity correction (ArUco barcode tracking)",
         [
-            "naps-track",
+            tool("naps-track"),
             "--slp-path",                             raw_slp,
             "--video-path",                           video,
             "--output-path",                          corrected_slp,
@@ -176,9 +195,9 @@ def main(input_video: str = None, output_dir: str = None) -> str:
 
     # ── Step 3: SLEAP CSV export ───────────────────────────────────────────────
     run(
-        "Step 3/3 — SLEAP CSV export",
+        "Stage 3/3 — SLEAP CSV export",
         [
-            "sleap-convert",
+            tool("sleap-convert"),
             corrected_slp,
             "--format", "analysis.csv",
             "--output", final_csv,
@@ -200,6 +219,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SLEAP + NAPS video → CSV pipeline")
     parser.add_argument("--input",      required=True, help="Path to input video")
     parser.add_argument("--output-dir", default=None,  help="Directory for all outputs")
+    parser.add_argument("--model",      default=None,
+                        help="SLEAP model folder (overrides MULTI_INSTANCE_MODEL)")
     args = parser.parse_args()
 
-    main(input_video=args.input, output_dir=args.output_dir)
+    main(input_video=args.input, output_dir=args.output_dir, model=args.model)
