@@ -10,6 +10,7 @@ The final CSV has the same structure as labels.v013_infr-naps.csv and can be
 fed directly into find_interactions_by_antennation.py.
 """
 
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -18,11 +19,21 @@ import cv2
 
 
 def video_frame_count(path: str) -> int:
-    """Return the total number of frames in a video."""
+    """Return the number of frames actually decodable from a video.
+
+    Container metadata (CAP_PROP_FRAME_COUNT) can overstate the real frame
+    count for some mp4 encodings, which makes SLEAP/NAPS try to read frames
+    that don't exist. Counting by reading through avoids that mismatch.
+    """
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         sys.exit(f"[ERROR] Could not open video to count frames: {path}")
-    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    n = 0
+    while True:
+        ok, _ = cap.read()
+        if not ok:
+            break
+        n += 1
     cap.release()
     return n
 
@@ -107,6 +118,13 @@ def main(input_video: str = None, output_dir: str = None) -> str:
     Path(raw_slp).parent.mkdir(parents=True, exist_ok=True)
     Path(corrected_slp).parent.mkdir(parents=True, exist_ok=True)
 
+    # Some mp4 encodings report more frames in their container metadata than
+    # are actually decodable, which makes SLEAP/NAPS try to read frames past
+    # the end of the video and crash. Count the real decodable frames once
+    # up front and clamp both tools to that range.
+    last_frame = video_frame_count(video) - 1
+    print(f"  Last valid frame : {last_frame} (auto-detected)")
+
     print("\nBee Tracking Pipeline: SLEAP + NAPS")
     print(f"  Input video      : {video}")
     print(f"  Raw SLP output   : {raw_slp}")
@@ -114,21 +132,25 @@ def main(input_video: str = None, output_dir: str = None) -> str:
     print(f"  Final CSV        : {final_csv}")
 
     # ── Step 1: SLEAP multi-instance inference ────────────────────────────────
-    run(
-        "Step 1/3 — SLEAP multi-instance inference",
-        [
-            "sleap-track",
-            video,
-            "--model", MULTI_INSTANCE_MODEL,
-            "--tracking.tracker", "simple",
-            "--output", raw_slp,
-        ],
-    )
+    sleap_track_cmd = [
+        "sleap-track",
+        video,
+        "--model", MULTI_INSTANCE_MODEL,
+        "--tracking.tracker", "simple",
+        "--frames", f"0-{last_frame}",
+        "--output", raw_slp,
+    ]
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        # tensorflow-metal's GPU backend crashes on this model's CropAndResize
+        # op on Apple Silicon; CPU inference is the reliable path there.
+        sleap_track_cmd.append("--cpu")
+
+    run("Step 1/3 — SLEAP multi-instance inference", sleap_track_cmd)
 
     # ── Step 2: NAPS identity correction ──────────────────────────────────────
     naps_end_frame = NAPS_END_FRAME
     if naps_end_frame is None:
-        naps_end_frame = video_frame_count(video)
+        naps_end_frame = last_frame
         print(f"  NAPS end frame   : {naps_end_frame} (auto-detected)")
 
     run(
@@ -158,7 +180,7 @@ def main(input_video: str = None, output_dir: str = None) -> str:
         [
             "sleap-convert",
             corrected_slp,
-            "--format", "csv",
+            "--format", "analysis.csv",
             "--output", final_csv,
         ],
     )
