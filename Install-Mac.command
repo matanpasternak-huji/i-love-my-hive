@@ -13,6 +13,9 @@ export UV_PYTHON_INSTALL_DIR="$TOOLS/python"
 export UV_CACHE_DIR="$TOOLS/uv-cache"
 export UV_NO_MODIFY_PATH=1
 export UV_PYTHON_PREFERENCE=only-managed
+# Trust the system's certificates (needed on university/corporate networks
+# that inspect HTTPS; uv otherwise only trusts its built-in list).
+export UV_NATIVE_TLS=1
 
 pause_exit() {
   if [ -t 0 ]; then echo; read -r -p "Press Enter to close this window..." _; fi

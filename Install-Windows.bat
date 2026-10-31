@@ -14,6 +14,9 @@ set "UV_PYTHON_INSTALL_DIR=%TOOLS%\python"
 set "UV_CACHE_DIR=%TOOLS%\uv-cache"
 set "UV_NO_MODIFY_PATH=1"
 set "UV_PYTHON_PREFERENCE=only-managed"
+rem Trust the system's certificates (needed on university/corporate networks
+rem that inspect HTTPS; uv otherwise only trusts its built-in list).
+set "UV_NATIVE_TLS=1"
 
 echo Bee Interaction Detector - installing into:
 echo   %APP_DIR%
