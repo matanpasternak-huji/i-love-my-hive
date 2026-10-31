@@ -58,6 +58,26 @@ def _fmt_elapsed(seconds):
     return "{:d}:{:02d}:{:02d}".format(h, m, s) if h else "{:d}:{:02d}".format(m, s)
 
 
+def _python_executable():
+    # type: () -> str
+    """Interpreter for the pipeline: python.exe even if the GUI runs under pythonw.exe
+    (pythonw has no usable stdout, so the log would stay empty)."""
+    exe = Path(sys.executable)
+    if exe.name.lower() == "pythonw.exe":
+        console = exe.with_name("python.exe")
+        if console.exists():
+            return str(console)
+    return str(exe)
+
+
+def _script_dirs():
+    # type: () -> list
+    """Where this environment's console scripts (sleap-track, …) live:
+    next to the interpreter (venv), or in Scripts\\ (Windows conda env)."""
+    exe_dir = Path(sys.executable).parent
+    return [str(d) for d in (exe_dir, exe_dir / "Scripts") if d.is_dir()]
+
+
 def _kill_tree(pid):
     # type: (int) -> None
     """Terminate a process and all of its descendants (sleap-track, naps-track, ...)."""
@@ -215,10 +235,9 @@ class RunningPage(QWidget):
         env = QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONUNBUFFERED", "1")
         env.insert("PYTHONIOENCODING", "utf-8")
-        # Make the venv's console scripts (sleap-track, naps-track…) resolvable
-        # even when the GUI was started without activating the venv.
-        bin_dir = str(Path(sys.executable).parent)
-        env.insert("PATH", bin_dir + os.pathsep + env.value("PATH", ""))
+        # Make the environment's console scripts (sleap-track, naps-track…)
+        # resolvable even when the GUI was started without activating it.
+        env.insert("PATH", os.pathsep.join(_script_dirs() + [env.value("PATH", "")]))
 
         self._process = QProcess(self)
         self._process.setProcessEnvironment(env)
@@ -231,7 +250,7 @@ class RunningPage(QWidget):
         self._start_time = time.monotonic()
         self._elapsed_lbl.setText("0:00")
         self._clock.start()
-        self._process.start(sys.executable, self.build_command(params, output_dir))
+        self._process.start(_python_executable(), self.build_command(params, output_dir))
 
     def is_running(self):
         # type: () -> bool
@@ -410,7 +429,7 @@ class RunningPage(QWidget):
         if self._canceled or error != QProcess.FailedToStart:
             return
         self._fail("Could not start Python ({}): {}".format(
-            sys.executable, self._process.errorString()))
+            _python_executable(), self._process.errorString()))
 
     def _on_finished(self, exit_code, exit_status):
         self._flush_buffers()

@@ -38,17 +38,28 @@ def video_frame_count(path: str) -> int:
     return n
 
 
+def script_dirs() -> list:
+    """Directories where this interpreter's console scripts are installed.
+
+    - venv (macOS/Linux): <venv>/bin/          (next to python)
+    - venv (Windows):     <venv>\\Scripts\\     (next to python.exe)
+    - conda (Windows):    <env>\\python.exe + <env>\\Scripts\\
+    """
+    exe_dir = Path(sys.executable).parent
+    return [d for d in (exe_dir, exe_dir / "Scripts") if d.is_dir()]
+
+
 def tool(name: str) -> str:
     """Resolve a console script (sleap-track, naps-track, ...) to a full path.
 
-    Prefer the copy installed next to the running interpreter, so the pipeline
-    works even when the virtualenv's bin/ directory isn't on PATH (e.g. when
-    launched from the GUI or an IDE without activating the venv).
+    Prefer the copy installed with the running interpreter, so the pipeline
+    works even when the environment isn't activated (e.g. when launched from
+    the GUI or an IDE).
     """
-    bin_dir = Path(sys.executable).parent
-    for candidate in (bin_dir / name, bin_dir / f"{name}.exe"):
-        if candidate.exists():
-            return str(candidate)
+    for d in script_dirs():
+        for candidate in (d / f"{name}.exe", d / name):
+            if candidate.is_file():
+                return str(candidate)
     return name
 
 # ==================== CONFIGURATION ====================

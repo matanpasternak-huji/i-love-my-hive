@@ -12,6 +12,7 @@ Creates a timestamped run folder inside <output_dir>, then runs:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -19,6 +20,16 @@ from pathlib import Path
 
 # Resolve sibling scripts relative to this file so the pipeline works from any cwd.
 _HERE = Path(__file__).resolve().parent
+
+# On Windows, piped/redirected output defaults to the ANSI code page (cp1252),
+# which can't encode characters the pipeline prints (e.g. "↔") and would crash.
+# Use UTF-8 for this process and every Python step it launches.
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 
 def run_step(description: str, cmd: list) -> None:
