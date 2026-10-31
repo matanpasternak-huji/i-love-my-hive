@@ -12,10 +12,24 @@ Creates a timestamped run folder inside <output_dir>, then runs:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# Resolve sibling scripts relative to this file so the pipeline works from any cwd.
+_HERE = Path(__file__).resolve().parent
+
+# On Windows, piped/redirected output defaults to the ANSI code page (cp1252),
+# which can't encode characters the pipeline prints (e.g. "↔") and would crash.
+# Use UTF-8 for this process and every Python step it launches.
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 
 def run_step(description: str, cmd: list) -> None:
@@ -42,6 +56,8 @@ def main() -> None:
     )
     parser.add_argument("--input",  required=True, help="Path to input video")
     parser.add_argument("--output", required=True, help="Root output directory")
+    parser.add_argument("--model",  default=None,
+                        help="SLEAP model folder (default: the one set in video_to_csv.py)")
     parser.add_argument("--touch-thresh",     type=int,   default=None)
     parser.add_argument("--min-touch-frames", type=int,   default=None)
     parser.add_argument("--d-exit-factor",    type=float, default=None)
@@ -63,14 +79,14 @@ def main() -> None:
     print(f"Input video: {video_path}")
 
     # ── Step 1: SLEAP + NAPS → tracking CSV ───────────────────────────────────
-    run_step(
-        "Step 1/3 — SLEAP inference + NAPS identity correction",
-        [
-            sys.executable, "video_to_csv.py",
-            "--input",      str(video_path),
-            "--output-dir", str(run_dir),
-        ],
-    )
+    step1_cmd = [
+        sys.executable, str(_HERE / "video_to_csv.py"),
+        "--input",      str(video_path),
+        "--output-dir", str(run_dir),
+    ]
+    if args.model:
+        step1_cmd += ["--model", str(Path(args.model).resolve())]
+    run_step("Step 1/3 — SLEAP inference + NAPS identity correction", step1_cmd)
 
     tracking_csv = run_dir / "tracking_data.csv"
     if not tracking_csv.exists():
@@ -78,7 +94,7 @@ def main() -> None:
 
     # ── Step 2: interaction detection ─────────────────────────────────────────
     step2_cmd = [
-        sys.executable, "find_interactions_by_antennation.py",
+        sys.executable, str(_HERE / "find_interactions_by_antennation.py"),
         "--video",      str(video_path),
         "--csv",        str(tracking_csv),
         "--output-dir", str(run_dir),
@@ -106,7 +122,7 @@ def main() -> None:
     run_step(
         "Step 3/3 — Split interactions by bee group",
         [
-            sys.executable, "split_to_groups.py",
+            sys.executable, str(_HERE / "split_to_groups.py"),
             "--input",      str(interactions_csv),
             "--output-dir", str(run_dir),
         ],

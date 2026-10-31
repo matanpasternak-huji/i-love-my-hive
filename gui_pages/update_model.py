@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
+from gui_state import PROJECT_DIR
 from gui_widgets import DropZone
 
 
@@ -79,45 +80,84 @@ class UpdateModelPage(QWidget):
         # type: (str) -> None
         folder = Path(path)
         has_weights = any(folder.rglob("*.pb")) or any(folder.rglob("*.h5"))
-        if has_weights:
+        has_config = (folder / "training_config.json").exists()
+        if has_weights and has_config:
             self._staged_path = path
             self._replace_btn.setEnabled(True)
         else:
             self._staged_path = None
             self._replace_btn.setEnabled(False)
+            missing = []
+            if not has_weights:
+                missing.append("model weights (.h5 / .pb)")
+            if not has_config:
+                missing.append("training_config.json")
             QMessageBox.warning(
                 self, "Invalid model",
-                "No .pb or .h5 files found in the selected folder.",
+                "This doesn't look like a SLEAP model folder.\nMissing: {}".format(
+                    ", ".join(missing)),
             )
 
     def _do_replace(self):
         if self._staged_path is None:
             return
 
-        old = Path(self._app_state.model_path)
-        new = Path(self._staged_path)
-        dest_parent = old.parent if old.exists() else new.parent
+        old = self._app_state.resolved_model_path() if self._app_state.model_path else None
+        old_exists = old is not None and old.is_dir()
+        new = Path(self._staged_path).resolve()
+        dest_parent = old.parent if old_exists else PROJECT_DIR / "Current Model"
         dest = dest_parent / new.name
 
-        # Prevent silent data loss when old and new point to the same directory
-        if dest.resolve() == old.resolve() and old.exists():
+        if old_exists and new == old.resolve():
+            QMessageBox.information(self, "Nothing to do", "That folder is already the active model.")
+            return
+        if old_exists and dest.resolve() == old.resolve():
             QMessageBox.warning(
                 self, "Invalid operation",
-                "The new model folder has the same name as the current model.",
+                "The new model folder has the same name as the current model.\n"
+                "Rename the new folder and try again.",
+            )
+            return
+        if dest.exists() and dest.resolve() != new:
+            QMessageBox.warning(
+                self, "Invalid operation",
+                "A different folder named “{}” already exists in:\n{}".format(new.name, dest_parent),
             )
             return
 
+        if old_exists:
+            answer = QMessageBox.question(
+                self, "Replace model?",
+                "This permanently deletes the current model:\n{}\n\n"
+                "and replaces it with:\n{}".format(old, new),
+                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
+        # Copy the new model first, so a failed copy never leaves us without a model.
         try:
-            if old.exists() and old.is_dir():
-                shutil.rmtree(old)
-            # Only copy if new is not already in the destination location
-            if new != dest:
+            if dest.resolve() != new:
+                dest_parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(str(new), str(dest))
         except OSError as exc:
             QMessageBox.critical(self, "Replace failed", str(exc))
             return
+        try:
+            if old_exists:
+                shutil.rmtree(str(old))
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Old model not removed",
+                "The new model is active, but the old one could not be deleted:\n{}".format(exc),
+            )
 
-        self._app_state.model_path = str(dest)
+        try:
+            stored = dest.resolve().relative_to(PROJECT_DIR)
+        except ValueError:
+            stored = dest.resolve()
+        # Forward slashes so config.json stays valid on every OS.
+        self._app_state.model_path = stored.as_posix()
         self._app_state.model_name = new.name
         self._app_state.save()
 

@@ -23,8 +23,17 @@ zipp
 Pygments
 torch
 ultralytics
-opencv-python~=4.12.0.88
 numpy
 pandas
 pytest-qt
 PyQt5
+psutil  # GUI: stop the whole pipeline process tree on cancel
+
+# SLEAP + NAPS (bee tracking pipeline). The bare `sleap` package on PyPI skips
+# its real dependencies -- the [pypi] extra is required.
+sleap[pypi]~=1.4.1
+naps-track~=1.0.9
+
+# `sleap[pypi]` pulls in plain opencv-python, but naps-track needs cv2.aruco,
+# which that package doesn't ship. After installing this file, run once more:
+#   pip uninstall -y opencv-python && pip install opencv-contrib-python~=4.6.0.66

@@ -58,7 +58,7 @@ class HomePage(QWidget):
 
         self._model_label = QLabel("Active model: {}".format(self._app_state.model_name))
         self._model_label.setAlignment(Qt.AlignCenter)
-        self._model_label.setStyleSheet("font-size: 8pt; color: #3d444d;")
+        self._model_label.setStyleSheet("font-size: 9pt; color: #6e7681;")
 
         layout.addWidget(title)
         layout.addWidget(subtitle)

@@ -76,6 +76,21 @@ Required Python packages:
    ```bash
    pip install -r requirements.txt
    ```
+4. Swap OpenCV for the contrib build (NAPS needs `cv2.aruco`, which plain `opencv-python` lacks):
+   ```bash
+   pip uninstall -y opencv-python
+   pip install opencv-contrib-python~=4.6.0.66
+   ```
+5. (Optional) Run the tests:
+   ```bash
+   python -m pytest
+   ```
+
+#### Windows notes
+- Use an **Anaconda Prompt** (or any terminal with the `hive_env` environment activated) for the steps above.
+- SLEAP runs on the CPU by default. For GPU inference on an NVIDIA card, TensorFlow 2.9 also needs CUDA 11.2 + cuDNN 8.1 in the environment:
+  `conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1`
+- The GUI and pipeline find `sleap-track` / `naps-track` in the environment's `Scripts\` folder, so they also work when started from an IDE without activating the environment.
 
 ## 🚀 Usage (Running the Pipeline)
 
