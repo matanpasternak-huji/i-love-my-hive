@@ -79,6 +79,18 @@ def test_installer_scripts_have_correct_form():
         assert all(b < 128 for b in data), name + " must be plain ASCII"
 
 
+def test_requirements_avoid_sleap_pypi_extra():
+    """sleap[pypi] 1.4.1 pins PySide2 5.13-5.14 on Windows/Intel Macs, which has no
+    Python 3.10 build, so installing it fails there (seen on Windows in v1.0.0)."""
+    lines = [l.split("#")[0].strip().lower()
+             for l in (ROOT / "requirements.txt").read_text().splitlines()]
+    lines = [l for l in lines if l]
+    assert not any(l.startswith("sleap[") for l in lines)
+    assert not any(l.startswith("pyside2") for l in lines)
+    assert "sleap==1.4.1" in lines
+    assert any(l.startswith("tensorflow>=") and 'platform_machine != "arm64"' in l for l in lines)
+
+
 def test_mac_scripts_are_valid_bash():
     for name in ("Install-Mac.command", "Start-Mac.command"):
         subprocess.run(["bash", "-n", str(ROOT / name)], check=True)
