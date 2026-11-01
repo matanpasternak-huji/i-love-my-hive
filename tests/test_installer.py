@@ -15,6 +15,12 @@ def test_long_windows_path_is_rejected_without_long_path_support():
     assert location_problem(long_dir, is_windows=True, long_paths_enabled=False)
     assert location_problem(long_dir, is_windows=True, long_paths_enabled=True) is None
     assert location_problem("C:\\BeeDetector", is_windows=True, long_paths_enabled=False) is None
+    # v1.0.2 accepted this 77-char folder and then failed inside TensorFlow's files.
+    real = "C:\\Users\\matan\\Downloads\\BeeInteractionDetector-v1.0.2\\BeeInteractionDetector"
+    assert location_problem(real, is_windows=True, long_paths_enabled=False)
+    # Typical "Extract All" to the Desktop / Downloads with a normal user name still fits.
+    assert location_problem("C:\\Users\\dana\\Desktop\\BeeDetector", is_windows=True,
+                            long_paths_enabled=False) is None
     assert location_problem("/Users/x/" + "a" * 200, is_windows=False, long_paths_enabled=False) is None
 
 

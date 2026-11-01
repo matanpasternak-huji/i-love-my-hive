@@ -30,8 +30,12 @@ TOOLS_DIR = APP_DIR / ".tools"
 ICON_PNG = APP_DIR / "media" / "app_icon.png"
 
 # TensorFlow ships files with very long names. Without Windows long-path
-# support, installing under a long folder path fails half-way through.
-MAX_WINDOWS_APP_DIR = 80
+# support (paths up to 259 chars), installing under a long folder fails half-way.
+# Longest file in the Windows wheels: 168 chars under site-packages (tensorflow
+# 2.8.4 include/.../ComprehensiveBufferize/...cpp.inc), and "\.venv\Lib\site-packages\"
+# adds 25, so the folder may be at most 259 - 25 - 168 = 66 chars. 60 leaves a margin.
+# (v1.0.2 used 80 and failed in a 77-char folder.)
+MAX_WINDOWS_APP_DIR = 60
 
 
 def step(title):
@@ -48,6 +52,23 @@ def windows_long_paths_enabled() -> bool:
             return winreg.QueryValueEx(key, "LongPathsEnabled")[0] == 1
     except OSError:
         return False
+
+
+def enable_windows_long_paths() -> bool:
+    """Turn on Windows long-path support (shows an admin "Yes/No" prompt).
+    New processes see the setting at once, so pip can then install anywhere.
+    Returns True if it is now enabled."""
+    script = (
+        "Start-Process -FilePath reg.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList "
+        "'add','HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem',"
+        "'/v','LongPathsEnabled','/t','REG_DWORD','/d','1','/f'"
+    )
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                       capture_output=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return windows_long_paths_enabled()
 
 
 def location_problem(app_dir, is_windows, long_paths_enabled) -> Optional[str]:
@@ -237,6 +258,12 @@ def main():
 
     step("Checking the install location")
     problem = location_problem(APP_DIR, is_windows, is_windows and windows_long_paths_enabled())
+    if problem and is_windows:
+        print("The folder path is long, so Windows' long-path support has to be turned on.\n"
+              ">>> A Windows permission window will appear now - please click 'Yes'. <<<", flush=True)
+        if enable_windows_long_paths():
+            print("[OK] Windows long-path support is now on.")
+            problem = None
     if problem:
         print("[ERROR] " + problem)
         return 1
@@ -248,6 +275,9 @@ def main():
         subprocess.run([sys.executable, str(APP_DIR / "install_requirements.py")], check=True)
     except subprocess.CalledProcessError:
         print("[ERROR] Installing the packages failed - see the messages above.")
+        if is_windows:
+            print("        If they mention 'Long Path', move the whole folder to  C:\\BeeDetector\n"
+                  "        and run Install-Windows.bat again from there.")
         return 1
 
     step("Checking that every part of the pipeline starts (about a minute)")
