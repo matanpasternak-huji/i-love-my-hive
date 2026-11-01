@@ -633,11 +633,12 @@ def compute_exit_threshold(frame_groups):
             if d > 10:
                 distances.append(d)
 
-    if not distances:
+    if distances:
+        avg = float(np.mean(distances))
+    else:
+        # Same thresholds as if the bee length were D_EXIT / D_EXIT_FACTOR.
+        avg = D_EXIT / D_EXIT_FACTOR
         print("[WARN] Could not measure bee size — using hardcoded threshold.")
-        return D_EXIT
-
-    avg = float(np.mean(distances))
     d_exit = avg * D_EXIT_FACTOR
     d_prox = avg * D_PROX_FACTOR
     print(f"  Avg bee body length : {avg:.1f} px  (n={len(distances)}, frames=first 500)")
