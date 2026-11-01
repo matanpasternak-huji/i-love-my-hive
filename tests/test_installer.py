@@ -91,6 +91,37 @@ def test_requirements_avoid_sleap_pypi_extra():
     assert any(l.startswith("tensorflow>=") and 'platform_machine != "arm64"' in l for l in lines)
 
 
+def test_failing_commands_reports_broken_programs():
+    from installer.setup_app import failing_commands
+
+    failures = failing_commands([
+        ("works", [sys.executable, "-c", "print('hi')"]),
+        ("broken", [sys.executable, "-c", "import pkg_that_does_not_exist"]),
+        ("missing", [str(ROOT / "no-such-program.exe")]),
+    ])
+    names = [name for name, _ in failures]
+    assert names == ["broken", "missing"]
+    assert "pkg_that_does_not_exist" in failures[0][1]
+
+
+def test_pipeline_commands_cover_every_step():
+    from installer.setup_app import pipeline_commands
+
+    cmds = dict(pipeline_commands(ROOT))
+    assert set(cmds) == {"SLEAP inference", "NAPS identity correction", "SLEAP CSV export",
+                         "Interaction detection", "Group split"}
+    assert all(cmd[-1] == "--help" for cmd in cmds.values())
+
+
+def test_pkg_resources_available():
+    """tensorflow-hub 0.14 (Windows / Intel Mac) imports pkg_resources at startup;
+    setuptools >= 82 no longer ships it (v1.0.1 failed on Windows this way)."""
+    import importlib.util
+
+    assert importlib.util.find_spec("pkg_resources") is not None, \
+        "pkg_resources missing - run: python install_requirements.py  (setuptools<81)"
+
+
 def test_mac_scripts_are_valid_bash():
     for name in ("Install-Mac.command", "Start-Mac.command"):
         subprocess.run(["bash", "-n", str(ROOT / name)], check=True)

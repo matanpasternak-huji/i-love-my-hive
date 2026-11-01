@@ -12,7 +12,9 @@ pillow
 tornado
 Jinja2~=3.1.6
 filelock
-setuptools
+# tensorflow-hub 0.14 (used on Windows / Intel Macs) imports pkg_resources,
+# which setuptools removed in 82 (81 still has it but warns on every import).
+setuptools<81
 matplotlib
 packaging
 future~=1.0.0

@@ -77,6 +77,41 @@ def model_path(app_dir=APP_DIR) -> Path:
     return p if p.is_absolute() else app_dir / p
 
 
+# ── Smoke test ────────────────────────────────────────────────────────────────
+
+def pipeline_commands(app_dir=APP_DIR):
+    """One cheap command per pipeline program. `--help` imports the whole program
+    (SLEAP -> TensorFlow, NAPS, OpenCV...), so a broken install fails here
+    instead of in the middle of a user's first run."""
+    sys.path.insert(0, str(app_dir))
+    from video_to_csv import tool  # same resolution the pipeline uses
+
+    py = sys.executable
+    return [
+        ("SLEAP inference", [tool("sleap-track"), "--help"]),
+        ("NAPS identity correction", [tool("naps-track"), "--help"]),
+        ("SLEAP CSV export", [tool("sleap-convert"), "--help"]),
+        ("Interaction detection", [py, str(app_dir / "find_interactions_by_antennation.py"), "--help"]),
+        ("Group split", [py, str(app_dir / "split_to_groups.py"), "--help"]),
+    ]
+
+
+def failing_commands(commands, timeout=600):
+    """Run each (name, cmd); return [(name, output tail)] for the ones that fail."""
+    failures = []
+    for name, cmd in commands:
+        print("  - {} ...".format(name), flush=True)
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                                 timeout=timeout, cwd=str(APP_DIR))
+            ok, output = res.returncode == 0, (res.stdout or "") + (res.stderr or "")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            ok, output = False, str(exc)
+        if not ok:
+            failures.append((name, "\n".join(output.strip().splitlines()[-15:])))
+    return failures
+
+
 # ── Icons ─────────────────────────────────────────────────────────────────────
 
 def make_icon(fmt) -> Optional[Path]:
@@ -214,6 +249,14 @@ def main():
     except subprocess.CalledProcessError:
         print("[ERROR] Installing the packages failed - see the messages above.")
         return 1
+
+    step("Checking that every part of the pipeline starts (about a minute)")
+    failures = failing_commands(pipeline_commands())
+    if failures:
+        for name, output in failures:
+            print("\n[ERROR] {} does not start:\n{}".format(name, output))
+        return 1
+    print("[OK] All pipeline programs start.")
 
     step("Checking the bee-tracking model")
     model = model_path()
