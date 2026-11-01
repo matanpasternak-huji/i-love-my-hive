@@ -153,14 +153,18 @@ def make_icon(fmt) -> Optional[Path]:
 
 # ── Shortcuts ─────────────────────────────────────────────────────────────────
 
+_CSIDL = {"Desktop": 0x0010, "Programs": 0x0002}   # CSIDL_DESKTOPDIRECTORY, CSIDL_PROGRAMS
+
+
 def _windows_folder(name) -> Optional[Path]:
-    """Real location of a shell folder ('Desktop', 'Programs'), incl. OneDrive redirection."""
-    out = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", "[Environment]::GetFolderPath('{}')".format(name)],
-        capture_output=True, text=True,
-    )
-    path = out.stdout.strip()
-    return Path(path) if path else None
+    """Real location of a shell folder ('Desktop', 'Programs'), incl. OneDrive redirection.
+    Asks the Windows API directly for the Unicode path: going through PowerShell's
+    console output broke on non-English folder names (Hebrew Desktop, v1.0.3)."""
+    import ctypes
+    buf = ctypes.create_unicode_buffer(1024)
+    if ctypes.windll.shell32.SHGetFolderPathW(None, _CSIDL[name], None, 0, buf) != 0:
+        return None
+    return Path(buf.value) if buf.value else None
 
 
 def create_windows_shortcut(lnk_path, icon=None):
@@ -297,17 +301,21 @@ def main():
               "          Use 'Update Model' in the program to select the model folder.".format(model))
 
     step("Creating the program shortcut")
+    start_file = "Start-Windows.bat" if is_windows else "Start-Mac.command"
+    made = []
     try:
-        for path in create_shortcuts(is_windows, is_mac):
+        made = create_shortcuts(is_windows, is_mac)
+        for path in made:
             print("[OK] Created: {}".format(path))
     except Exception as exc:  # a missing shortcut shouldn't fail the whole install
-        print("[WARNING] Could not create the shortcut ({}).\n"
-              "          You can start the program with the Start-{} file in the program folder."
-              .format(exc, "Windows.bat" if is_windows else "Mac.command"))
+        print("[WARNING] Could not create the shortcut ({}).".format(exc))
 
     print("\n" + "=" * 64)
     print("  Installation complete!")
-    print("  Start the program with the '{}' icon on your Desktop.".format(APP_NAME))
+    if made:
+        print("  Start the program with the '{}' icon on your Desktop.".format(APP_NAME))
+    else:
+        print("  Start the program by double-clicking {} in this folder.".format(start_file))
     print("  Keep this folder where it is - the program runs from it.")
     print("=" * 64)
     return 0
